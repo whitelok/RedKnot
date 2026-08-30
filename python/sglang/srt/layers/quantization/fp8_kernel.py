@@ -120,6 +120,30 @@ if _is_musa:
         return
 
 
+# RedKnot: register the fake (meta) impl for the v2 FP8 group-quant op on ALL
+# platforms so torch.compile / piecewise CUDA graph can trace it. Previously
+# this was gated behind `if _is_musa`, which left CUDA without a fake impl and
+# made piecewise CUDA graph capture fail with
+# "Operator does not support running with fake tensors". The op mutates output_q
+# and output_s in place and returns None, so the fake is a no-op.
+if not _is_musa:
+
+    @register_fake_if_exists("sgl_kernel::sgl_per_token_group_quant_8bit_v2")
+    def _(
+        input,
+        output_q,
+        output_s,
+        group_size,
+        eps,
+        fp8_min,
+        fp8_max,
+        scale_ue8m0,
+        fuse_silu_and_mul,
+        masked_m,
+    ):
+        return
+
+
 logger = logging.getLogger(__name__)
 
 

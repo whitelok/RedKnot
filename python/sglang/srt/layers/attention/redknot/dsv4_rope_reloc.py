@@ -77,6 +77,8 @@ def read_rope_bf16(
     loc: [N] int slot indices
     returns: [N, 64] bfloat16
     """
+    if buf.dtype != torch.uint8:
+        buf = buf.view(torch.uint8)
     num_pages, buf_numel_per_page = buf.shape
     buf_bf16 = buf.view(torch.bfloat16).flatten()
     base = _rope_offsets_bf16(loc, page_size, buf_numel_per_page)  # [N]
@@ -89,11 +91,100 @@ def write_rope_bf16(
     buf: torch.Tensor, loc: torch.Tensor, rope: torch.Tensor, page_size: int
 ) -> None:
     """Scatter rope[64] bf16 vectors back into ``buf`` at slots ``loc``."""
+    if buf.dtype != torch.uint8:
+        buf = buf.view(torch.uint8)
     num_pages, buf_numel_per_page = buf.shape
-    buf_bf16 = buf.view(torch.bfloat16).flatten()
-    base = _rope_offsets_bf16(loc, page_size, buf_numel_per_page)  # [N]
-    idx = base[:, None] + torch.arange(ROPE_DIM, device=buf.device)[None, :]  # [N,64]
-    buf_bf16[idx] = rope.to(torch.bfloat16)
+    # Same rationale as ``write_packed_kv``: address the page/token axes with two
+    # 1-D index tensors instead of building an ``[N, 64]`` index matrix.  In bf16
+    # element units each record spans ``NOPE_ROPE_BYTES // 2`` elements and its
+    # rope block starts at ``NOPE_DIM // 2``.
+    record_elems = NOPE_ROPE_BYTES // 2
+    rope_start = NOPE_DIM // 2
+    loc = loc.to(torch.int64)
+    page_index = loc // page_size
+    token_off = loc % page_size
+    records = (
+        buf.view(torch.bfloat16)[:, : page_size * record_elems]
+        .unflatten(1, (page_size, record_elems))
+    )
+    rope_region = records[:, :, rope_start : rope_start + ROPE_DIM]
+    rope_region[page_index, token_off] = rope.to(torch.bfloat16)
+
+
+def _packed_offsets_u8(
+    loc: torch.Tensor, page_size: int, buf_numel_per_page: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    loc = loc.to(torch.int64)
+    page_index = loc // page_size
+    token_off = loc % page_size
+    kv_base = page_index * buf_numel_per_page + token_off * NOPE_ROPE_BYTES
+    scale_base = (
+        page_index * buf_numel_per_page
+        + page_size * NOPE_ROPE_BYTES
+        + token_off * SCALE_PADDED
+    )
+    return kv_base, scale_base
+
+
+@torch.no_grad()
+def read_packed_kv(buf: torch.Tensor, loc: torch.Tensor, page_size: int) -> torch.Tensor:
+    """Gather complete DSV4 SWA records as ``[N, 584]`` uint8 tensors."""
+    # Ensure uint8 view — get_key_buffer may return a float8 view of the
+    # underlying uint8 storage (same byte layout).
+    if buf.dtype != torch.uint8:
+        buf = buf.view(torch.uint8)
+    _, buf_numel_per_page = buf.shape
+    flat = buf.flatten()
+    kv_base, scale_base = _packed_offsets_u8(loc, page_size, buf_numel_per_page)
+    kv_idx = kv_base[:, None] + torch.arange(NOPE_ROPE_BYTES, device=buf.device)
+    scale_idx = scale_base[:, None] + torch.arange(SCALE_PADDED, device=buf.device)
+    # Bounds check
+    max_kv = kv_idx.max().item() if kv_idx.numel() > 0 else -1
+    max_sc = scale_idx.max().item() if scale_idx.numel() > 0 else -1
+    if max_kv >= flat.numel() or max_sc >= flat.numel():
+        import logging
+        logging.error(
+            f"[read_packed_kv OOB] buf={list(buf.shape)} page_size={page_size} "
+            f"loc=[{loc.min().item()}..{loc.max().item()}] n={loc.numel()} "
+            f"flat={flat.numel()} max_kv_idx={max_kv} max_scale_idx={max_sc} "
+            f"buf_numel_per_page={buf_numel_per_page}"
+        )
+    return torch.cat((flat[kv_idx], flat[scale_idx]), dim=1)
+
+
+@torch.no_grad()
+def write_packed_kv(
+    buf: torch.Tensor, loc: torch.Tensor, packed: torch.Tensor, page_size: int
+) -> None:
+    """Scatter complete ``[N, 584]`` DSV4 SWA records into cache slots."""
+    if packed.shape != (loc.numel(), BYTES_PER_TOKEN):
+        raise ValueError(
+            f"packed shape must be {(loc.numel(), BYTES_PER_TOKEN)}, got {packed.shape}"
+        )
+    # Ensure uint8 view — get_key_buffer may return a float8 view of the
+    # underlying uint8 storage (same byte layout).
+    if buf.dtype != torch.uint8:
+        buf = buf.view(torch.uint8)
+    _, buf_numel_per_page = buf.shape
+    packed = packed.to(device=buf.device, dtype=torch.uint8)
+    # Index the page/token axes directly instead of materializing an
+    # ``[N, record_bytes]`` int64 index matrix.  The old form allocated eight
+    # bytes of index per payload byte and forced a fully general scatter, which
+    # dominated restore time.  Each page stores ``page_size`` contiguous
+    # nope+rope records followed by ``page_size`` contiguous scale records, so
+    # both regions are exact views and the innermost bytes stay contiguous.
+    loc = loc.to(torch.int64)
+    page_index = loc // page_size
+    token_off = loc % page_size
+    kv_region = buf[:, : page_size * NOPE_ROPE_BYTES].unflatten(
+        1, (page_size, NOPE_ROPE_BYTES)
+    )
+    scale_region = buf[
+        :,
+        page_size * NOPE_ROPE_BYTES : page_size * (NOPE_ROPE_BYTES + SCALE_PADDED),
+    ].unflatten(1, (page_size, SCALE_PADDED))
+    kv_region[page_index, token_off] = packed[:, :NOPE_ROPE_BYTES]
+    scale_region[page_index, token_off] = packed[:, NOPE_ROPE_BYTES:]
 
 
 @torch.no_grad()

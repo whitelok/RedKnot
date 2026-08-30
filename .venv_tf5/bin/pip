@@ -1,0 +1,6 @@
+#!/mnt/tidal-alsh01/dataset/redone/RedKnot_Deepseekv4/.venv_tf5/bin/python
+import sys
+from pip._internal.cli.main import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

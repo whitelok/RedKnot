@@ -752,6 +752,11 @@ class DeepSeekV4TokenToKVPool(BaseSWAKVPool):
         self.wait_layer_transfer(layer_id)
         return self.swa_kv_pool.get_key_buffer(self._swa_local_layer_id(layer_id))
 
+    def get_swa_raw_key_buffer_radix(self, layer_id: int) -> torch.Tensor:
+        """Return the underlying uint8 packed SWA buffer for snapshot/restore."""
+        self.wait_layer_transfer(layer_id)
+        return self.swa_kv_pool.kv_buffer[self._swa_local_layer_id(layer_id)]
+
     def set_swa_key_buffer_radix_fused(
         self,
         layer_id: int,
@@ -777,13 +782,35 @@ class DeepSeekV4TokenToKVPool(BaseSWAKVPool):
         eps: float,
         freqs_cis: torch.Tensor,
         positions: torch.Tensor,
+        *,
+        cache_translation: bool = True,
     ) -> None:
-        if self._should_cache_swa:
+        kv_rows = int(kv.shape[0])
+        positions_rows = int(positions.shape[0])
+        raw_loc_rows = int(raw_loc.shape[0])
+        if positions_rows != kv_rows or raw_loc_rows != kv_rows:
+            raise ValueError(
+                "SWA fused KV writer row geometry mismatch before launch: "
+                f"kv={kv_rows}, positions={positions_rows}, "
+                f"raw_loc={raw_loc_rows}"
+            )
+        if self._should_cache_swa and cache_translation:
             if layer_id == self.start_layer or self.cached_loc is None:
                 self.cached_loc = self.translate_loc_from_full_to_swa(raw_loc)
             swa_loc = self.cached_loc
         else:
+            # A selected-row writer has a different row geometry from the
+            # request-wide translation shared by dense layers.  Translate its
+            # locations independently and leave cached_loc untouched so a
+            # dirty write cannot consume or poison the dense-layer cache.
             swa_loc = self.translate_loc_from_full_to_swa(raw_loc)
+        swa_loc_rows = int(swa_loc.shape[0])
+        if swa_loc_rows != kv_rows:
+            raise ValueError(
+                "SWA translated location row count mismatch before launch: "
+                f"kv={kv_rows}, swa_loc={swa_loc_rows}; "
+                "the shared SWA translation cache may be stale"
+            )
         fused_k_norm_rope_flashmla(
             kv=kv,
             kv_weight=kv_weight,
