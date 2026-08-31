@@ -39,6 +39,9 @@ source ./environment-deepseek-v4-flash.env
 printf '[run] python=%s\n' "$(command -v python)"
 if [[ $# -eq 0 ]]; then
   printf '%s\n' \
-    '[run] default suites=256K + 440K, 15 cases each (10 short + 5 long)'
+    '[run] default suites=64K + 128K + 256K + 440K, 15 cases each (10 short + 5 long)' \
+    '[run] hot-state TTFT=3 warmups + 10 measured pairs per case' \
+    '[run] output=one complete Recomputed vs RedKnot text pair per case' \
+    '[run] Recomputed=same DeepSeek-V4-Flash model with full online recomputation'
 fi
 exec python benchmark_RedKnot_DeepSeekV4Flash.py "$@"

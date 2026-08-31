@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-click, fail-closed DeepSeek-V4-Flash + RedKnot release benchmark.
 
-The default run replays two immutable LongBench-derived RAG suites at 256K
-and 440K.  Each suite contains ten short-answer cases and five supplemental
+The default run replays four immutable LongBench-derived RAG suites at 64K,
+128K, 256K and 440K.  Each suite contains ten short-answer cases and five supplemental
 long-answer cases.  Every case compares a full online recompute with the
 validated RedKnot closure: independent position-zero MLA artifacts, online
 RoPE relocation and head merge, Indexer-guided row sparsity, and
@@ -65,18 +65,47 @@ DATASET_SHA256 = {
     "triviaqa": "ed2529de2e10b12c00f49981870c23c7c51667069cdd8d0740e1423ff337d7fa",
 }
 LENGTHS = {
+    "64K": {
+        "target_tokens": 65536,
+        "chunk_tokens": 16384,
+        "num_chunks": 4,
+        "merged_prefill": 49152,
+        "mem_fraction": 0.45,
+        "swa_full_ratio": 0.10,
+        "cublas_woa_fastpath": 1,
+        "query_protection_tokens": 16384,
+    },
+    "128K": {
+        "target_tokens": 131072,
+        "chunk_tokens": 32768,
+        "num_chunks": 4,
+        "merged_prefill": 98304,
+        "mem_fraction": 0.40,
+        "swa_full_ratio": 0.10,
+        "cublas_woa_fastpath": 1,
+        "query_protection_tokens": 32768,
+    },
     "256K": {
         "target_tokens": 262144,
         "chunk_tokens": 32768,
-        "merged_prefill": 65536,
-        "mem_fraction": 0.35,
-        "swa_full_ratio": 0.10,
+        "num_chunks": 8,
+        "merged_prefill": 229376,
+        # The 229376-token online group follows a 32768-token resident
+        # prefix, so the SWA pool must cover the complete 262144-token
+        # request.  The former 0.35/0.25 split yielded only 187648 SWA
+        # slots and deterministically fell back to seven 32768-token
+        # forwards.  B300 has enough post-weight headroom for this pool;
+        # the benchmark's existing authenticated pre-CUDA capacity gate
+        # remains the fail-closed authority.
+        "mem_fraction": 0.45,
+        "swa_full_ratio": 0.50,
         "cublas_woa_fastpath": 1,
         "query_protection_tokens": 32768,
     },
     "440K": {
         "target_tokens": 450560,
         "chunk_tokens": 56320,
+        "num_chunks": 8,
         "merged_prefill": 0,
         "mem_fraction": 0.29,
         "swa_full_ratio": 0.25,
@@ -86,6 +115,16 @@ LENGTHS = {
 }
 
 SUITE_CONTRACTS = {
+    "64K": {
+        "format": "redknot_deepseek_v4_flash_64k_case_v1",
+        "name": "redknot_deepseek_v4_flash_64k_15case_v1",
+        "path": SUITE_ROOT / "release_64k_15case.jsonl",
+    },
+    "128K": {
+        "format": "redknot_deepseek_v4_flash_128k_case_v1",
+        "name": "redknot_deepseek_v4_flash_128k_15case_v1",
+        "path": SUITE_ROOT / "release_128k_15case.jsonl",
+    },
     "256K": {
         "format": "redknot_deepseek_v4_flash_256k_case_v1",
         "name": "redknot_deepseek_v4_flash_256k_15case_v1",
@@ -99,8 +138,10 @@ SUITE_CONTRACTS = {
 }
 DEFAULT_SUITE = Path(SUITE_CONTRACTS["256K"]["path"])
 DEFAULT_SUITES = tuple(
-    Path(SUITE_CONTRACTS[length]["path"]) for length in ("256K", "440K")
+    Path(SUITE_CONTRACTS[length]["path"])
+    for length in ("64K", "128K", "256K", "440K")
 )
+RELEASE_SUITES_MANIFEST = SUITE_ROOT / "RELEASE_SUITES.json"
 
 
 def _sha256(path: Path) -> str:
@@ -109,6 +150,47 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _validate_default_release_manifest() -> dict[str, Any]:
+    if not RELEASE_SUITES_MANIFEST.is_file():
+        raise FileNotFoundError(
+            f"release-suite manifest is absent: {RELEASE_SUITES_MANIFEST}"
+        )
+    manifest = json.loads(RELEASE_SUITES_MANIFEST.read_text(encoding="utf-8"))
+    if manifest.get("format") != "redknot_deepseek_v4_flash_release_suites_v1":
+        raise ValueError("release-suite manifest format is invalid")
+    ordered = tuple(manifest.get("ordered_lengths", ()))
+    if ordered != ("64K", "128K", "256K", "440K"):
+        raise ValueError(f"release-suite order is invalid: {ordered}")
+    execution = manifest.get("execution", {})
+    expected_execution = {
+        "baseline_label": "Recomputed",
+        "quality_repeats_per_case": 1,
+        "ttft_measured_pairs_per_case": 10,
+        "ttft_protocol": "hot_state_client_stream_first_output_token_p50_p95",
+        "ttft_warmup_pairs_per_case": 3,
+    }
+    for key, expected in expected_execution.items():
+        if execution.get(key) != expected:
+            raise ValueError(
+                f"release execution contract mismatch for {key}: "
+                f"{execution.get(key)!r} != {expected!r}"
+            )
+    suites = manifest.get("suites", {})
+    for length, path in zip(ordered, DEFAULT_SUITES, strict=True):
+        record = suites.get(length, {})
+        if record.get("path") != path.name:
+            raise ValueError(f"release-suite path mismatch for {length}")
+        if not path.is_file():
+            raise FileNotFoundError(f"default release suite is absent: {path}")
+        actual = _sha256(path)
+        if record.get("sha256") != actual:
+            raise ValueError(
+                f"release-suite SHA256 mismatch for {length}: "
+                f"manifest={record.get('sha256')!r} actual={actual}"
+            )
+    return manifest
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -549,7 +631,7 @@ def _build_profile(
         "--chunk-tokens",
         str(LENGTHS[length]["chunk_tokens"]),
         "--num-chunks",
-        "8",
+        str(LENGTHS[length]["num_chunks"]),
         "--long-output-tokens",
         str(long_output_tokens),
         "--data-out",
@@ -578,7 +660,7 @@ def _validate_profile(
     spec = LENGTHS[length]
     if (
         value.get("dataset") != dataset
-        or value.get("num_chunks") != 8
+        or value.get("num_chunks") != spec["num_chunks"]
         or value.get("num_queries") != num_queries
         or value.get("chunk_tokens") != spec["chunk_tokens"]
         or value.get("query_start") != spec["target_tokens"]
@@ -619,7 +701,7 @@ def _validate_profile(
         raise RuntimeError(f"profile answer style mismatch: {path}")
     geometry = prompt.get("geometry", {})
     if (
-        geometry.get("num_chunks") != 8
+        geometry.get("num_chunks") != spec["num_chunks"]
         or geometry.get("chunk_tokens") != spec["chunk_tokens"]
         or geometry.get("query_start") != spec["target_tokens"]
     ):
@@ -777,7 +859,11 @@ def _extract_metrics(result: dict[str, Any]) -> dict[str, Any]:
         }
     return {
         "overall_pass": result.get("overall_pass"),
-        "dense_ttft_p50_s": latency.get("dense_p50"),
+        # The core harness historically names the full-online baseline
+        # "dense".  DeepSeek-V4-Flash is not a dense model, so the release
+        # schema uses the semantically accurate Recomputed label while still
+        # reading the backwards-compatible core field.
+        "recomputed_ttft_p50_s": latency.get("dense_p50"),
         "redknot_ttft_p50_s": latency.get("reuse_p50"),
         "ttft_speedup": latency.get("speedup"),
         "model_internal_ttft_speedup": latency.get("model_internal", {}).get(
@@ -805,9 +891,9 @@ def _extract_output_pairs(result: dict[str, Any]) -> list[dict[str, Any]]:
                     "query_index": query.get("query_index", query_position),
                     "repeat": repeat.get("repeat", repeat_position),
                     "question": str(query.get("question", "")),
-                    "dense_output": str(repeat.get("dense_text", "")),
+                    "recomputed_output": str(repeat.get("dense_text", "")),
                     "redknot_output": str(repeat.get("reuse_text", "")),
-                    "dense_output_tokens": repeat.get(
+                    "recomputed_output_tokens": repeat.get(
                         "dense_output_tokens",
                         query.get("dense_output_tokens"),
                     ),
@@ -830,17 +916,20 @@ def _format_metric(value: Any, suffix: str = "") -> str:
 
 def _print_comparison(length: str, dataset: str, record: dict[str, Any]) -> None:
     metrics = record.get("metrics", {})
-    print(f"\n===== {length} / {dataset}: dense vs RedKnot =====", flush=True)
+    print(
+        f"\n===== {length} / {dataset}: Recomputed vs RedKnot =====",
+        flush=True,
+    )
     for pair in record.get("output_comparisons", ()):
         print(
             f"\n[query {pair['query_index']} repeat {pair['repeat']}] "
             f"{pair['question']}",
             flush=True,
         )
-        print("\n[DENSE OUTPUT]", flush=True)
+        print("\n[RECOMPUTED OUTPUT]", flush=True)
         print(
-            f"({pair.get('dense_output_tokens', 'unknown')} generated tokens)\n"
-            f"{pair['dense_output']}",
+            f"({pair.get('recomputed_output_tokens', 'unknown')} generated tokens)\n"
+            f"{pair['recomputed_output']}",
             flush=True,
         )
         print("\n[REDKNOT OUTPUT]", flush=True)
@@ -851,7 +940,8 @@ def _print_comparison(length: str, dataset: str, record: dict[str, Any]) -> None
         )
     print(
         "\n[TTFT / COMPUTE] "
-        f"dense={_format_metric(metrics.get('dense_ttft_p50_s'), 's')} "
+        "recomputed="
+        f"{_format_metric(metrics.get('recomputed_ttft_p50_s'), 's')} "
         f"redknot={_format_metric(metrics.get('redknot_ttft_p50_s'), 's')} "
         f"speedup={_format_metric(metrics.get('ttft_speedup'), 'x')} "
         "full_input_compute_saving="
@@ -865,13 +955,20 @@ def _print_comparison(length: str, dataset: str, record: dict[str, Any]) -> None
 def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
     suite_mode = (
         release.get("run_mode")
-        in {"release_256k_15case_suite", "release_440k_15case_suite"}
+        in {
+            "release_64k_15case_suite",
+            "release_128k_15case_suite",
+            "release_256k_15case_suite",
+            "release_440k_15case_suite",
+        }
     )
     suite_length = str((release.get("lengths") or [""])[0])
     lines = [
         "# DeepSeek V4 Flash + RedKnot output comparison",
         "",
-        "The report compares the complete generated text directly.",
+        "The report compares the complete generated text directly. Recomputed "
+        "means the same DeepSeek-V4-Flash model performs a full online "
+        "recomputation without RedKnot reuse.",
         "",
     ]
     for run in release.get("runs", ()):
@@ -882,7 +979,8 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
             [
                 f"## {length} / {dataset}",
                 "",
-                f"- Dense TTFT p50: {_format_metric(metrics.get('dense_ttft_p50_s'), ' s')}",
+                "- Recomputed TTFT p50: "
+                f"{_format_metric(metrics.get('recomputed_ttft_p50_s'), ' s')}",
                 f"- RedKnot TTFT p50: {_format_metric(metrics.get('redknot_ttft_p50_s'), ' s')}",
                 f"- TTFT speedup: {_format_metric(metrics.get('ttft_speedup'), 'x')}",
                 "- Full-input major-compute saving: "
@@ -899,7 +997,7 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
             continue
         for pair in run.get("output_comparisons", ()):
             question = html.escape(pair.get("question", ""))
-            dense = html.escape(pair.get("dense_output", ""))
+            recomputed = html.escape(pair.get("recomputed_output", ""))
             redknot = html.escape(pair.get("redknot_output", ""))
             lines.extend(
                 [
@@ -907,11 +1005,11 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
                     "",
                     f"Question: {question}",
                     "",
-                    "| Dense output | RedKnot output |",
+                    "| Recomputed output | RedKnot output |",
                     "|---|---|",
                     "| "
-                    f"<pre>[{pair.get('dense_output_tokens', 'unknown')} tokens]\n"
-                    f"{dense}</pre> | "
+                    f"<pre>[{pair.get('recomputed_output_tokens', 'unknown')} tokens]\n"
+                    f"{recomputed}</pre> | "
                     f"<pre>[{pair.get('redknot_output_tokens', 'unknown')} tokens]\n"
                     f"{redknot}</pre> |",
                     "",
@@ -937,7 +1035,7 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
         )
         for run, pair in ordered_pairs:
             question = html.escape(str(pair.get("question", "")))
-            dense = html.escape(str(pair.get("dense_output", "")))
+            recomputed = html.escape(str(pair.get("recomputed_output", "")))
             redknot = html.escape(str(pair.get("redknot_output", "")))
             index = int(pair["suite_case_index"])
             lines.extend(
@@ -952,11 +1050,11 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
                     "",
                     f"Question: {question}",
                     "",
-                    "| Dense output | RedKnot output |",
+                    "| Recomputed output | RedKnot output |",
                     "|---|---|",
                     "| "
-                    f"<pre>[{pair.get('dense_output_tokens', 'unknown')} tokens]\n"
-                    f"{dense}</pre> | "
+                    f"<pre>[{pair.get('recomputed_output_tokens', 'unknown')} tokens]\n"
+                    f"{recomputed}</pre> | "
                     f"<pre>[{pair.get('redknot_output_tokens', 'unknown')} tokens]\n"
                     f"{redknot}</pre> |",
                     "",
@@ -1005,7 +1103,9 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
             )
             for index, case in enumerate(document["selected"], start=1):
                 question = html.escape(str(case.get("question", "")))
-                dense = html.escape(str(case.get("dense_output", "")))
+                recomputed = html.escape(
+                    str(case.get("recomputed_output", case.get("dense_output", "")))
+                )
                 redknot = html.escape(str(case.get("redknot_output", "")))
                 lines.extend(
                     [
@@ -1017,11 +1117,12 @@ def _write_comparison_report(path: Path, release: dict[str, Any]) -> None:
                         "",
                         f"Question: {question}",
                         "",
-                        "| Dense output | RedKnot output |",
+                        "| Recomputed output | RedKnot output |",
                         "|---|---|",
                         "| "
-                        f"<pre>[{case.get('dense_output_tokens', 0)} tokens]\n"
-                        f"{dense}</pre> | "
+                        "<pre>["
+                        f"{case.get('recomputed_output_tokens', case.get('dense_output_tokens', 0))} tokens]\n"
+                        f"{recomputed}</pre> | "
                         f"<pre>[{case.get('redknot_output_tokens', 0)} tokens]\n"
                         f"{redknot}</pre> |",
                         "",
@@ -1046,8 +1147,16 @@ def _run_single() -> int:
     parser.add_argument("--holder-python", default="/root/miniconda3/bin/python")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--ttft-warmup", type=int, default=3)
-    parser.add_argument("--ttft-iters", type=int, default=5)
-    parser.add_argument("--quality-repeats", type=int, default=2)
+    parser.add_argument("--ttft-iters", type=int, default=10)
+    parser.add_argument(
+        "--quality-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Generate one complete Recomputed/RedKnot text pair per frozen "
+            "release case by default."
+        ),
+    )
     parser.add_argument("--measure-qps", action="store_true")
     parser.add_argument("--qps-concurrencies", default="1")
     parser.add_argument("--qps-warmup-waves", type=int, default=1)
@@ -1072,7 +1181,7 @@ def _run_single() -> int:
         "--suite-jsonl",
         default="",
         help=(
-            "Run one ordered frozen mixed-output suite. Each 256K or 440K "
+            "Run one ordered frozen mixed-output suite. Each 64K, 128K, 256K or 440K "
             "release suite contains ten short-answer cases followed by five "
             "long-answer cases."
         ),
@@ -1458,8 +1567,9 @@ def _run_single() -> int:
 
 
 def _run_default_release_suites() -> int:
-    """Run both immutable release suites under one timestamped parent."""
+    """Run all four immutable release suites under one timestamped parent."""
 
+    release_suite_manifest = _validate_default_release_manifest()
     missing = [str(path) for path in DEFAULT_SUITES if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"default release suites are absent: {missing}")
@@ -1497,16 +1607,19 @@ def _run_default_release_suites() -> int:
         if completed.returncode and final_status == 0:
             final_status = int(completed.returncode)
     _atomic_json(
-        output / "two_length_summary.json",
+        output / "four_length_summary.json",
         {
-            "format": "redknot_deepseek_v4_flash_two_length_release_v1",
+            "format": "redknot_deepseek_v4_flash_four_length_release_v1",
             "created_utc": stamp,
-            "ordered_lengths": ["256K", "440K"],
+            "release_suites_manifest": str(RELEASE_SUITES_MANIFEST),
+            "release_suites_manifest_sha256": _sha256(RELEASE_SUITES_MANIFEST),
+            "execution_contract": release_suite_manifest["execution"],
+            "ordered_lengths": ["64K", "128K", "256K", "440K"],
             "suite_case_count_per_length": 15,
             "runs": records,
         },
     )
-    print(f"[done] two-length summary: {output / 'two_length_summary.json'}")
+    print(f"[done] four-length summary: {output / 'four_length_summary.json'}")
     return final_status
 
 

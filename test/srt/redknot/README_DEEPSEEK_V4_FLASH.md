@@ -13,18 +13,34 @@ an existing environment, sources it, and forwards any extra CLI arguments to
 launching a second TP8 benchmark while one is active exits with a concise
 message instead of stopping or corrupting the first run.
 
-With no extra arguments, both the wrapper and Python entrypoint run two frozen
+With no extra arguments, both the wrapper and Python entrypoint run four frozen
 suites in order:
 
-1. `datasets/LongBench/suites/release_256k_15case.jsonl`
-2. `datasets/LongBench/suites/release_440k_15case.jsonl`
+1. `datasets/LongBench/suites/release_64k_15case.jsonl`
+2. `datasets/LongBench/suites/release_128k_15case.jsonl`
+3. `datasets/LongBench/suites/release_256k_15case.jsonl`
+4. `datasets/LongBench/suites/release_440k_15case.jsonl`
+
+`datasets/LongBench/suites/RELEASE_SUITES.json` freezes their order, SHA256
+digests and hot-state execution contract. The one-command entrypoint validates
+that manifest before it starts any child suite, so edited or mismatched JSONL
+files fail before GPU execution.
 
 Each suite contains ten short-answer cases followed by five 30-token
 long-answer cases. Each per-length `comparison.md` prints exactly fifteen
-complete Dense/RedKnot output pairs in JSONL order. Long-output presentation
+complete Recomputed/RedKnot output pairs in JSONL order. Recomputed means the
+same DeepSeek-V4-Flash checkpoint performs a full online recomputation without
+RedKnot reuse; it does not mean that the MoE model becomes a dense model.
+Long-output presentation
 cases are explicitly excluded from the primary short-answer accuracy
-aggregate. A parent `two_length_summary.json` records both immutable suite
+aggregate. A parent `four_length_summary.json` records all four immutable suite
 hashes, output directories and exit codes.
+
+The default TTFT protocol is hot-state: each frozen case runs three unmeasured
+warmup pairs followed by ten measured Recomputed/RedKnot pairs, and reports
+p50/p95. Offline snapshot construction, model loading and first-use kernel
+compilation are not counted as online TTFT. Each case also generates one
+complete text pair for the side-by-side output report.
 
 Enter the release directory first. Install once, then source the pinned runtime
 before every new shell session:
@@ -52,7 +68,7 @@ environment. On an already prepared machine, `--check-only` followed by
 virtual environment on `PATH`, so `python` and `$REDKNOT_PYTHON` resolve to the
 same executable.
 
-The first exact 32K/55K snapshot on a cold machine can spend several minutes
+The first exact 16K/32K/55K snapshot on a cold machine can spend several minutes
 in host-side validation and CUDA/Triton compilation. This is expected offline
 preparation, not online TTFT and not a deadlock. The launcher mirrors
 `driver.log` to the terminal and prints a 30-second heartbeat while the
@@ -81,7 +97,7 @@ CUDA or GPU ABI differs.
 
 The DeepSeek-V4 runtime and benchmark implementation are copied directly from
 RedKnotV0.1; this release entrypoint does not reimplement the algorithm. The
-default reproduction is the packaged 256K and 440K 15-case suites; an explicit
+default reproduction is the packaged 64K, 128K, 256K and 440K 15-case suites; an explicit
 matrix can cover five packaged LongBench datasets at both lengths. Before
 touching a GPU it verifies model topology, every dataset SHA256, the published
 43×64 head-policy reference, sparse-MoE policy, and each frozen profile. The
@@ -94,7 +110,11 @@ benchmark gate failure, crash, or signal.
 Useful bounded runs:
 
 ```bash
-# Validate either frozen 15-case suite; no GPU use.
+# Validate any frozen 15-case suite; no GPU use.
+python benchmark_RedKnot_DeepSeekV4Flash.py --prepare-only \
+  --suite-jsonl datasets/LongBench/suites/release_64k_15case.jsonl
+python benchmark_RedKnot_DeepSeekV4Flash.py --prepare-only \
+  --suite-jsonl datasets/LongBench/suites/release_128k_15case.jsonl
 python benchmark_RedKnot_DeepSeekV4Flash.py --prepare-only \
   --suite-jsonl datasets/LongBench/suites/release_256k_15case.jsonl
 python benchmark_RedKnot_DeepSeekV4Flash.py --prepare-only \
@@ -120,7 +140,7 @@ python benchmark_RedKnot_DeepSeekV4Flash.py \
 # Supplemental long-output matrix. Explicit matrix runs without this flag stay
 # byte-for-byte on the shortest-span prompt/profile path. Long-output profiles
 # live in separate long30/long50 cohort directories and results show the actual
-# Dense/RedKnot generated-token counts beside the complete text.
+# Recomputed/RedKnot generated-token counts beside the complete text.
 ./run_deepseek_v4_flash_reproduction.sh \
   --datasets hotpotqa,musique,multifieldqa_en --lengths 256K,440K \
   --cases-per-dataset 3 --long-output-tokens 30
@@ -151,15 +171,16 @@ missing, the entrypoint downloads `deepseek-ai/DeepSeek-V4-Flash-0731` unless
 
 ## What is measured
 
-The paired reference performs a full online prefill without treating document
-1 as a prefix. RedKnot materializes document 1 as a certified prefix and runs
-documents 2–8 through the combined independent-position-0 head-reuse/online
+The Recomputed reference performs a full online prefill without treating
+document 1 as a prefix. RedKnot materializes document 1 as a certified prefix and runs
+all remaining documents (2–4 or 2–8, depending on context length) through the combined independent-position-0 head-reuse/online
 RoPE relocation and merge path, Indexer-selected transformer rows, and
 assignment-sparse adaptive expert Top-K. Dense boundary layers are 0–2 and
 40–42; middle layers use eight online global heads and 56 reusable local heads.
 
-The user-facing result compares every complete dense output with the matching
-complete RedKnot output side by side. It also reports dense/RedKnot TTFT,
+The user-facing result compares every complete Recomputed output with the
+matching complete RedKnot output side by side. It also reports
+Recomputed/RedKnot TTFT,
 speedup and the conservative arithmetic compute ledger used during the
 original evaluation. The ledger gives no saving credit to Indexer,
 compressor, router, normalization, memory traffic, kernel launch or TP
