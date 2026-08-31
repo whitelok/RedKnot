@@ -21,6 +21,27 @@
 
 > **Research release.** RedKnot is an SGLang-based research system for long-context inference. Its kernels, policy contracts and supported models are actively evolving. Reproduce the frozen benchmark manifests before using a reported result to compare systems or hardware.
 
+## Performance at a glance
+
+On qualified long-context profiles, RedKnot is designed to keep quality regression
+within **1 percentage point** while converting reusable attention and token-level
+work into a **2–5× hot-state TTFT speedup** and **70–90% arithmetic compute-ledger
+saving**. These are an operating envelope, not a universal guarantee: the
+achieved point depends on the model, context length, GPU topology and frozen
+policy. The per-suite result JSON is the source of truth.
+
+```text
+Qualified long-context operating envelope
+
+Quality regression      ≤ 1 pp   |█                                       |
+Hot-state TTFT          2×–5×    |████████████████████████████████        |
+Compute-ledger saving   70%–90%  |███████████████████████████████████     |
+```
+
+The compute ledger intentionally excludes memory traffic, kernel-launch cost,
+TP communication and all uncredited runtime components; it is therefore not a
+claim about total system energy or universal end-to-end throughput.
+
 ## News
 
 - **2026-08 — DeepSeek V4 Flash TP8 release.** This repository now includes a packaged DeepSeek-V4-Flash + RedKnot path with one-command reproduction over frozen 64K, 128K, 256K and 440K LongBench-derived RAG suites.
@@ -90,6 +111,39 @@ It also reports hot-state streaming TTFT and the conservative compute ledger. Th
 The compute ledger is deliberately narrower than total system cost: it does **not** give saving credit for Indexer, compressor, router, normalization, memory traffic, kernel launch or TP communication. The default release does not claim a QPS result; run the explicit QPS diagnostic only when its runtime evidence is valid for the requested concurrency.
 
 For environment details, resume semantics, model validation, result layout and the exact metric contract, see the [DeepSeek V4 Flash release guide](test/srt/redknot/README_DEEPSEEK_V4_FLASH.md).
+
+## Other benchmark entrypoints
+
+Alongside the DeepSeek-V4-Flash release path, the repository contains
+model-specific RedKnot benchmark entrypoints for Mistral, Qwen and Llama:
+
+| Family | Entry point | Status |
+|---|---|---|
+| Mistral | `benchmark_RedKnot_Mistral_RAG.py` | Native-SWA reuse benchmark |
+| Qwen3 | `benchmark_RedKnot_Qwen3_RAG.py` | Head-aware RAG benchmark |
+| Qwen3.5 MoE | `benchmark_RedKnot_Qwen35_RAG.py` | MoE benchmark; requires the pinned Transformers 5 environment |
+| Llama 3.3 | `benchmark_RedKnot_Llama3.3_RAG.py` | Experimental; validate its model-specific result contract |
+
+Run them from the release directory after installing the required model weights:
+
+```bash
+cd test/srt/redknot
+
+# Mistral and Qwen3
+python benchmark_RedKnot_Mistral_RAG.py
+python benchmark_RedKnot_Qwen3_RAG.py
+
+# Qwen3.5 MoE: use the pinned Transformers 5 environment
+../../.venv_tf5/bin/python benchmark_RedKnot_Qwen35_RAG.py
+
+# Llama 3.3: experimental path
+python benchmark_RedKnot_Llama3.3_RAG.py
+```
+
+Each script owns its model-specific configuration, dataset and hardware
+requirements. Do not compare their numbers directly with the DeepSeek V4 Flash
+TP8 release unless their reported input, precision and measurement contract
+match.
 
 ## How RedKnot works
 
