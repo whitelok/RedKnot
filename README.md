@@ -42,6 +42,15 @@ claim about total system energy or universal end-to-end throughput.
 - **2026-07 — Lab-model adapters.** RedKnot released experimental adapters and RAG benchmarks for Mistral, Qwen3, Qwen3.5 MoE and Llama 3.3, covering native SWA, GQA/MHA head policies and sparse-FFN execution.
 - **2026-06 — Paper.** [*RedKnot: Efficient Long-Context LLM Serving with Head-Aware KV Reuse and SegPagedAttention*](https://arxiv.org/abs/2606.06256) is available on arXiv.
 
+## Future Work
+
+- **September–October 2026 — Hybrid-architecture models.** We plan to publish
+  adaptation results for the Qwen3.5-to-Qwen4 family and GLM-5.3. If there is
+  another model you would like RedKnot to support, please
+  [open an issue](https://github.com/rednote-machine-learning/RedKnot/issues).
+- **DeepSeek V4 series.** We will continue supporting the DeepSeek V4 family,
+  with DeepSeek V4 Pro adaptation coming soon.
+
 ## What is RedKnot?
 
 RedKnot is a model-aware long-context execution framework built around three
@@ -73,8 +82,8 @@ The DeepSeek-V4-Flash release is the primary reproducible path in this repositor
 ### Quick start
 
 ```bash
-git clone https://code.devops.xiaohongshu.com/liuyang52/redknot-0.1.git
-cd redknot-0.1/test/srt/redknot
+git clone git@github.com:rednote-machine-learning/RedKnot.git
+cd RedKnot/test/srt/redknot
 
 # Creates or validates the pinned environment, then runs all four suites.
 ./run_deepseek_v4_flash_reproduction.sh
@@ -150,8 +159,6 @@ test/srt/redknot/server/                      TP8 server launcher and policy che
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://www.ubiquant.com"><img src="assets/partners/ubiquant.svg" alt="Ubiquant" height="54" /></a>
 </p>
-
-<p align="center"><sub>Partner names and trademarks remain the property of their respective owners.</sub></p>
 
 ## Citation
 
