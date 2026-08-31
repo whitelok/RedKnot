@@ -23,20 +23,14 @@
 
 ## Performance at a glance
 
-On qualified long-context profiles, RedKnot is designed to keep quality regression
-within **1 percentage point** while converting reusable attention and token-level
-work into a **2–5× hot-state TTFT speedup** and **70–90% arithmetic compute-ledger
-saving**. These are an operating envelope, not a universal guarantee: the
-achieved point depends on the model, context length, GPU topology and frozen
-policy. The per-suite result JSON is the source of truth.
+![Qualified long-context operating envelope](assets/redknot-performance-overview.svg)
 
-```text
-Qualified long-context operating envelope
-
-Quality regression      ≤ 1 pp   |█                                       |
-Hot-state TTFT          2×–5×    |████████████████████████████████        |
-Compute-ledger saving   70%–90%  |███████████████████████████████████     |
-```
+On qualified long-context profiles, RedKnot targets quality regression within
+**1 percentage point**, a **2–5× hot-state TTFT speedup**, and **70–90%
+arithmetic compute-ledger saving**. Blue denotes the Recomputed reference;
+yellow denotes the RedKnot operating envelope. The achieved point depends on
+the model, context length, GPU topology and frozen policy; per-suite result
+JSON is the source of truth.
 
 The compute ledger intentionally excludes memory traffic, kernel-launch cost,
 TP communication and all uncredited runtime components; it is therefore not a
@@ -88,29 +82,7 @@ python benchmark_RedKnot_DeepSeekV4Flash.py
 
 The default run is intentionally comprehensive and sequential: it needs the same eight GPUs for each suite and does not run two TP8 servers concurrently.
 
-### Packaged suites
-
-| Context length | Cases | Contents |
-|---|---:|---|
-| 64K | 15 | 10 short-answer + 5 long-answer frozen cases |
-| 128K | 15 | 10 short-answer + 5 long-answer frozen cases |
-| 256K | 15 | 10 short-answer + 5 long-answer frozen cases |
-| 440K | 15 | 10 short-answer + 5 long-answer frozen cases |
-
-The suite order and SHA256 digests are frozen in [`test/srt/redknot/datasets/LongBench/suites/RELEASE_SUITES.json`](test/srt/redknot/datasets/LongBench/suites/RELEASE_SUITES.json). The launcher validates this manifest before allocating a GPU.
-
-### What the release reports
-
-For every case, the release writes a side-by-side complete-text comparison:
-
-- **Recomputed** — the same DeepSeek-V4-Flash checkpoint performs a complete online prefill with no RedKnot reuse and without treating document 1 as a prefix.
-- **RedKnot** — document 1 is materialized as a certified prefix; subsequent documents use the head-reuse, online recovery and merge path defined by the frozen profile.
-
-It also reports hot-state streaming TTFT and the conservative compute ledger. The default TTFT protocol is three unmeasured warmup pairs followed by ten measured Recomputed/RedKnot pairs, with p50 and p95 reported. Model loading, offline snapshot construction and first-use compilation are not charged to online TTFT.
-
-The compute ledger is deliberately narrower than total system cost: it does **not** give saving credit for Indexer, compressor, router, normalization, memory traffic, kernel launch or TP communication. The default release does not claim a QPS result; run the explicit QPS diagnostic only when its runtime evidence is valid for the requested concurrency.
-
-For environment details, resume semantics, model validation, result layout and the exact metric contract, see the [DeepSeek V4 Flash release guide](test/srt/redknot/README_DEEPSEEK_V4_FLASH.md).
+The suite order, SHA256 digests, TTFT contract and full result layout are documented in the [DeepSeek V4 Flash release guide](test/srt/redknot/README_DEEPSEEK_V4_FLASH.md).
 
 ## Other benchmark entrypoints
 
@@ -161,18 +133,6 @@ Online RAG prefill
 For the DeepSeek V4 Flash profile, dense boundary layers remain online. In the middle layers, the frozen head policy separates online global heads from reusable local heads. The runtime validates policy identity, segment geometry, artifact provenance and restoration evidence before it accepts reuse.
 
 This separation matters: a lower arithmetic compute count alone does not prove a lower end-to-end latency. The release therefore publishes both compute-ledger and client-observed TTFT measurements.
-
-## Measurement protocol
-
-Reproducibility and honest comparison are first-class requirements:
-
-1. Recomputed and RedKnot receive identical frozen input token IDs and sampling parameters.
-2. Recomputed performs full online computation; it does not use a prefix cache.
-3. RedKnot runtime evidence must cover the expected restore forwards and layers; missing or fallback evidence fails closed.
-4. Short-answer and long-answer presentation cases are reported separately. The five long-output cases are not silently included in the primary short-answer aggregate.
-5. Result JSON files retain machine-readable runtime evidence, while `comparison.md` presents the complete generated text side by side.
-
-Published numbers are specific to the frozen suite, model revision, TP topology and hardware. They should not be read as a universal speedup guarantee.
 
 ## Repository layout
 
