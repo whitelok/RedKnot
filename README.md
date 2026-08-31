@@ -83,7 +83,7 @@ The DeepSeek-V4-Flash release is the primary reproducible path in this repositor
 | Component | Frozen release setting |
 |---|---|
 | Model | `deepseek-ai/DeepSeek-V4-Flash-0731` |
-| Hardware used for the published run | 8× NVIDIA L20X, 143,771 MiB per GPU, TP8; driver 570.148.08 |
+| Hardware used for the published run | 8× NVIDIA H200, 143,771 MiB per GPU, TP8; driver 570.148.08 |
 | Runtime | CPython 3.11.13, PyTorch 2.9.1 + CUDA 12.8, Triton 3.5.1 |
 | Kernels | FlashMLA `1.0.0+9241ae3`, SGL Kernel 0.3.20, FlashInfer 0.5.3 |
 | MLA policy | Layers 0–2 and 40–42 fully online; layers 3–39 use 8 online global heads and 56 reusable local heads, with online RoPE relocation and projection merge |
@@ -194,7 +194,6 @@ test/srt/redknot/server/                      TP8 server launcher and policy che
 ## Citation
 
 If you use RedKnot, please cite the paper:
-
 > Yang Liu, ZhaoKai Luo, HuaYi Jin, ZhiYong Wang, RuoZhou He, BoYu Wang, Guanjie Chen, and Junhao Hu. *RedKnot: Efficient Long-Context LLM Serving with Head-Aware KV Reuse and SegPagedAttention.* [arXiv:2606.06256](https://arxiv.org/abs/2606.06256).
 
 ## Acknowledgements & License
