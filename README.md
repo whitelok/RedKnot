@@ -1,7 +1,6 @@
 <div align="center" id="redknottop">
   <img src="RedKnot_Logo.png" alt="RedKnot logo" width="600" />
 
-  <h1>RedKnot</h1>
   <p><strong>Head-aware reuse and token-selective execution for long-context LLM serving.</strong></p>
 
   <p>
@@ -158,6 +157,8 @@ test/srt/redknot/server/                      TP8 server launcher and policy che
   <a href="https://www.huawei.com"><img src="assets/partners/huawei.png" alt="Huawei" height="72" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
   <a href="https://www.ubiquant.com"><img src="assets/partners/ubiquant.svg" alt="Ubiquant" height="54" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/partners/quanjie.jpg" alt="Quanjie" height="54" />
 </p>
 
 ## Citation
@@ -166,10 +167,8 @@ If you use RedKnot, please cite the paper:
 
 > Yang Liu, ZhaoKai Luo, HuaYi Jin, ZhiYong Wang, RuoZhou He, BoYu Wang, Guanjie Chen, and Junhao Hu. *RedKnot: Efficient Long-Context LLM Serving with Head-Aware KV Reuse and SegPagedAttention.* [arXiv:2606.06256](https://arxiv.org/abs/2606.06256).
 
-## Acknowledgements
+## Acknowledgements & License
 
 RedKnot is built on [SGLang](https://github.com/sgl-project/sglang) and benefits from the broader serving ecosystem, including [vLLM](https://github.com/vllm-project/vllm).
 
-## License
-
-Released under the [Apache License 2.0](LICENSE).
+RedKnot is released under the [Apache License 2.0](LICENSE). Third-party components remain subject to their respective licenses and notices.
