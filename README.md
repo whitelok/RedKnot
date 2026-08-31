@@ -78,6 +78,36 @@ than against a prefix-cache hit.
 
 The DeepSeek-V4-Flash release is the primary reproducible path in this repository. It runs on a TP8 server and ships all frozen inputs, head policy, sparse-MoE policy and execution manifests required for the packaged benchmark.
 
+### Verified high-efficiency configuration
+
+| Component | Frozen release setting |
+|---|---|
+| Model | `deepseek-ai/DeepSeek-V4-Flash-0731` |
+| Hardware used for the published run | 8× NVIDIA L20X, 143,771 MiB per GPU, TP8; driver 570.148.08 |
+| Runtime | CPython 3.11.13, PyTorch 2.9.1 + CUDA 12.8, Triton 3.5.1 |
+| Kernels | FlashMLA `1.0.0+9241ae3`, SGL Kernel 0.3.20, FlashInfer 0.5.3 |
+| MLA policy | Layers 0–2 and 40–42 fully online; layers 3–39 use 8 online global heads and 56 reusable local heads, with online RoPE relocation and projection merge |
+| Token and expert sparsity | Checkpoint-island row selection plus plan-scoped adaptive expert Top-K; cumulative router mass 0.50, physical Top-K buckets 3/4/5/6 |
+| TTFT protocol | Hot state; 3 unmeasured paired warmups followed by 10 measured Recomputed/RedKnot pairs per case; streaming first output token, p50/p95 |
+
+| Suite | Prompt-token target | Frozen document geometry | Runtime static-memory fraction |
+|---|---:|---:|---:|
+| 64K | 65,536 | 4 × 16,384 tokens | 0.45 |
+| 128K | 131,072 | 4 × 32,768 tokens | 0.40 |
+| 256K | 262,144 | 8 × 32,768 tokens | 0.45 |
+| 440K | 450,560 | 8 × 56,320 tokens | 0.29 |
+
+Each frozen suite contains 15 cases: 10 short-answer cases and 5 supplemental
+30-token long-output cases. The Recomputed reference performs a complete
+online prefill with no RedKnot prefix reuse; RedKnot materializes the first
+document as the certified prefix and applies the published reuse, row-sparse
+and adaptive-Top-K policy to the remaining documents.
+
+The published measurements above were produced on L20X, not H200. An 8× H200
+node has comparable memory capacity, but it must rebuild the hardware-specific
+FlashMLA, DeepGEMM and SGL kernels and rerun the frozen suites; L20X timings are
+not presented as H200 measurements.
+
 ### Quick start
 
 ```bash
