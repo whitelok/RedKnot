@@ -12,9 +12,9 @@
 
   <p>
     <a href="#deepseek-v4-flash-release">Quick start</a> ·
-    <a href="#how-redknot-works">Architecture</a> ·
-    <a href="#measurement-protocol">Measurement</a> ·
-    <a href="#documentation">Documentation</a> ·
+    <a href="#what-is-redknot">Technology</a> ·
+    <a href="#other-benchmark-entrypoints">Benchmarks</a> ·
+    <a href="#partners">Partners</a> ·
     <a href="https://arxiv.org/abs/2606.06256">Paper</a>
   </p>
 </div>
@@ -39,21 +39,32 @@ claim about total system energy or universal end-to-end throughput.
 ## News
 
 - **2026-08 — DeepSeek V4 Flash TP8 release.** This repository now includes a packaged DeepSeek-V4-Flash + RedKnot path with one-command reproduction over frozen 64K, 128K, 256K and 440K LongBench-derived RAG suites.
+- **2026-07 — Lab-model adapters.** RedKnot released experimental adapters and RAG benchmarks for Mistral, Qwen3, Qwen3.5 MoE and Llama 3.3, covering native SWA, GQA/MHA head policies and sparse-FFN execution.
 - **2026-06 — Paper.** [*RedKnot: Efficient Long-Context LLM Serving with Head-Aware KV Reuse and SegPagedAttention*](https://arxiv.org/abs/2606.06256) is available on arXiv.
 
 ## What is RedKnot?
 
-Long-context prefill is often dominated by work that is repeated across related documents and by computation applied uniformly to tokens with very different importance. RedKnot exposes that structure to the serving runtime:
+RedKnot is a model-aware long-context execution framework built around three
+composable ideas rather than one model-specific cache shortcut:
 
-| Mechanism | What it does |
-|---|---|
-| **Head-aware MLA reuse** | Stores reusable local-head MLA artifacts offline, recomputes global/recovery heads online, then merges them in the model projection path. |
-| **RoPE-aware segment relocation** | Builds reusable documents in their own canonical position space and restores their position-dependent representation online. |
-| **Indexer-guided token-row recovery** | Restricts expensive recovery work to selected transformer rows while retaining the required attention state. |
-| **Adaptive sparse MoE Top-K** | Uses a policy-controlled expert budget rather than applying one fixed expert count to every token. |
-| **SegPagedAttention runtime** | Represents KV visibility and storage at head/segment granularity instead of requiring one uniform cache policy. |
+1. **Head decomposition and aggregation.** Attention heads are classified by
+   their long-context behavior. Reusable local heads are prepared offline;
+   global, retrieval or recovery heads remain online. Their projected
+   contributions are merged back into the model without changing the model's
+   external interface. The same abstraction maps to MLA, MHA, GQA and native
+   sliding-window attention, with model-specific projection and RoPE handling.
+2. **Sparse FFN and MoE execution.** Token-level importance controls which rows
+   enter expensive FFN work, while adaptive expert Top-K assigns more experts
+   only when the router distribution requires them. Dense boundary layers and
+   protected query rows preserve the critical path.
+3. **SegPagedAttention.** KV pages and visibility are organized per head and
+   segment, allowing global, local and retrieval heads to consume different
+   context scopes without forcing one uniform cache layout.
 
-The design is intended to turn algorithmic reuse into a real serving gain while keeping the reference path explicit and auditable. It is not a prefix-cache benchmark: the release reference is a full online recomputation on the same checkpoint and input IDs.
+Together, these mechanisms reduce redundant work at the head, token and expert
+levels. RedKnot keeps a full online Recomputed path as its reference; reported
+gains are therefore measured against the same checkpoint and input IDs rather
+than against a prefix-cache hit.
 
 ## DeepSeek V4 Flash release
 
@@ -117,23 +128,6 @@ requirements. Do not compare their numbers directly with the DeepSeek V4 Flash
 TP8 release unless their reported input, precision and measurement contract
 match.
 
-## How RedKnot works
-
-```text
-Offline document preparation
-  document tokens ──► head-aware MLA artifacts + shared latent/cache state
-                                  │
-                                  ▼
-Online RAG prefill
-  query + documents ──► global/recovery heads online ──► projection merge ──► output
-                             │                    ▲
-                             └─ Indexer-selected rows / adaptive MoE Top-K
-```
-
-For the DeepSeek V4 Flash profile, dense boundary layers remain online. In the middle layers, the frozen head policy separates online global heads from reusable local heads. The runtime validates policy identity, segment geometry, artifact provenance and restoration evidence before it accepts reuse.
-
-This separation matters: a lower arithmetic compute count alone does not prove a lower end-to-end latency. The release therefore publishes both compute-ledger and client-observed TTFT measurements.
-
 ## Repository layout
 
 ```text
@@ -145,24 +139,19 @@ test/srt/redknot/datasets/                    LongBench inputs, suites and prove
 test/srt/redknot/server/                      TP8 server launcher and policy checks
 ```
 
-## Model and feature status
+## Partners
 
-| Area | Status |
-|---|---|
-| DeepSeek-V4-Flash TP8 packaged reproduction | **Release path** |
-| Head-aware MLA reuse, RoPE relocation, Indexer recovery | **Release path for the frozen DeepSeek profile** |
-| Adaptive sparse MoE Top-K | **Policy-controlled research feature** |
-| Other model benchmark scripts | Experimental; validate their own model-specific README and result contract |
-| Ascend NPU adaptation | Work in progress |
+<p align="center">
+  <a href="https://www.xiaohongshu.com"><img src="assets/partners/xiaohongshu.png" alt="Xiaohongshu" height="72" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.pku.edu.cn"><img src="assets/partners/peking-university.png" alt="Peking University" height="58" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.huawei.com"><img src="assets/partners/huawei.png" alt="Huawei" height="72" /></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.ubiquant.com"><img src="assets/partners/ubiquant.svg" alt="Ubiquant" height="54" /></a>
+</p>
 
-## Documentation
-
-- [DeepSeek V4 Flash release and reproduction guide](test/srt/redknot/README_DEEPSEEK_V4_FLASH.md)
-- [Frozen release suite manifest](test/srt/redknot/datasets/LongBench/suites/RELEASE_SUITES.json)
-- [Dataset provenance](test/srt/redknot/datasets/LongBench/PROVENANCE.json)
-- [Head-policy contract](test/srt/redknot/head_class/deepseek_v4_flash_0731_redknot.json)
-- [Sparse-MoE policy contract](test/srt/redknot/sparse_ffn_params/deepseek_v4_flash_0731.json)
-- [SGLang installation guide](https://docs.sglang.io/get_started/install.html)
+<p align="center"><sub>Partner names and trademarks remain the property of their respective owners.</sub></p>
 
 ## Citation
 
