@@ -150,15 +150,15 @@ test/srt/redknot/server/                      TP8 server launcher and policy che
 ## Partners
 
 <p align="center">
-  <a href="https://www.xiaohongshu.com"><img src="assets/partners/xiaohongshu.png" alt="Xiaohongshu" height="72" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.pku.edu.cn"><img src="assets/partners/peking-university.png" alt="Peking University" height="58" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.huawei.com"><img src="assets/partners/huawei.png" alt="Huawei" height="72" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <a href="https://www.ubiquant.com"><img src="assets/partners/ubiquant.svg" alt="Ubiquant" height="54" /></a>
-  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="assets/partners/quanjie.jpg" alt="Quanjie" height="54" />
+  <a href="https://www.xiaohongshu.com"><img src="assets/partners/xiaohongshu.png" alt="Xiaohongshu" width="72" /></a>
+  &emsp;&emsp;
+  <a href="https://www.pku.edu.cn"><img src="assets/partners/peking-university.png" alt="Peking University" width="174" /></a>
+  &emsp;&emsp;
+  <a href="https://www.huawei.com"><img src="assets/partners/huawei.png" alt="Huawei" width="132" /></a>
+  &emsp;&emsp;
+  <a href="https://www.ubiquant.com"><img src="assets/partners/ubiquant.svg" alt="Ubiquant" width="205" /></a>
+  &emsp;&emsp;
+  <img src="assets/partners/quanjie.jpg" alt="Quanjie" width="126" />
 </p>
 
 ## Citation
