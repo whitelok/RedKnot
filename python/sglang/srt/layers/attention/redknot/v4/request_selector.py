@@ -5,6 +5,13 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Mapping, Sequence, Tuple
 
 
+# Flash-0731 keeps its legacy/default 64-island policy.  Pro-0813 may request
+# a larger explicit cap for 256K+ contexts; the model runner guards that path
+# with REDKNOT_DSV4_VARIANT=pro0813 so this limit expansion does not alter the
+# Flash execution profile.
+MAX_CHECKPOINT_ISLANDS = 256
+
+
 @dataclass(frozen=True)
 class SegmentPrefixCandidates:
     """Offline Indexer salience for one independently cached segment."""
@@ -323,8 +330,8 @@ def allocate_checkpoint_cell_islands(
         raise ValueError("checkpoint_stride must be divisible by block_tokens")
     if token_budget_tokens < 0:
         raise ValueError("token_budget_tokens must be non-negative")
-    if max_islands is not None and not 1 <= max_islands <= 64:
-        raise ValueError("max_islands must be in [1, 64] or None")
+    if max_islands is not None and not 1 <= max_islands <= MAX_CHECKPOINT_ISLANDS:
+        raise ValueError("max_islands must be in [1, 256] or None")
 
     segment_cap_blocks: Dict[int, int] = {}
     if max_tokens_by_segment is not None:
@@ -629,8 +636,8 @@ def allocate_checkpoint_cell_islands_fast(
         raise ValueError("checkpoint_stride must be divisible by block_tokens")
     if token_budget_tokens < 0:
         raise ValueError("token_budget_tokens must be non-negative")
-    if max_islands is not None and not 1 <= max_islands <= 64:
-        raise ValueError("max_islands must be in [1, 64] or None")
+    if max_islands is not None and not 1 <= max_islands <= MAX_CHECKPOINT_ISLANDS:
+        raise ValueError("max_islands must be in [1, 256] or None")
 
     blocks_per_cell = checkpoint_stride // block_tokens
     segment_cap_blocks: Dict[int, int] = {}
@@ -885,6 +892,7 @@ __all__ = [
     "CheckpointBridgeCandidates",
     "CheckpointCellCandidates",
     "CheckpointReplayLayout",
+    "MAX_CHECKPOINT_ISLANDS",
     "SegmentPrefixCandidates",
     "SelectedCheckpointIsland",
     "SelectedSegmentPrefix",

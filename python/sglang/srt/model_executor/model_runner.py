@@ -3338,11 +3338,15 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         # prune documents 2..N.  The exact cached token ids are reauthenticated
         # by the combined restore validator before any consumer omission.
         if plan.get("radix_prefix_role") == "seed":
-            combined_profile = (
+            combined_profiles = (
                 "combined_headsplit_independent_rope_zoff_checkpoint_"
-                "rowsparse_3_37_3_v1"
+                "rowsparse_3_37_3_v1",
+                "combined_headsplit_pro0813_independent_rope_zoff_checkpoint_"
+                "rowsparse_3_55_3_v1",
+                "combined_headsplit_pro0813_independent_rope_full_checkpoint_"
+                "rowsparse_3_55_3_v1",
             )
-            if str(plan.get("mla_off_execution_profile", "")) != combined_profile:
+            if str(plan.get("mla_off_execution_profile", "")) not in combined_profiles:
                 raise ValueError(
                     "selected-row radix seed received a foreign execution profile"
                 )
@@ -3406,6 +3410,7 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         )
         from sglang.srt.layers.attention.redknot.v4.config import RedKnotV4Config
         from sglang.srt.layers.attention.redknot.v4.request_selector import (
+            MAX_CHECKPOINT_ISLANDS,
             checkpoint_effective_segment_cap_tokens,
             checkpoint_mandatory_prefix_tokens,
         )
@@ -3494,8 +3499,17 @@ class ModelRunner(ModelRunnerKVCacheMixin):
                 raise ValueError(
                     "checkpoint_stride_tokens must be a positive multiple of 512"
                 )
-            if not 0 < checkpoint_max_islands <= 64:
-                raise ValueError("checkpoint_max_islands must be in [1, 64]")
+            if not 0 < checkpoint_max_islands <= MAX_CHECKPOINT_ISLANDS:
+                raise ValueError("checkpoint_max_islands must be in [1, 256]")
+            if (
+                checkpoint_max_islands > 64
+                and os.environ.get("REDKNOT_DSV4_VARIANT", "").strip().lower()
+                != "pro0813"
+            ):
+                raise ValueError(
+                    "checkpoint_max_islands above the legacy 64-island cap "
+                    "requires REDKNOT_DSV4_VARIANT=pro0813"
+                )
             expected_offset = 0
             for segment_index, segment in enumerate(segments):
                 offset = int(segment["global_offset"])
