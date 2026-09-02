@@ -8043,6 +8043,11 @@ class RedKnotMLAAttnBackend(DeepseekV4AttnBackend):
                     )
                     if not isinstance(layer_digests, Mapping):
                         layer_digests = {}
+                    domain_digests = getattr(
+                        session, "shared_latent_domain_digests", {}
+                    )
+                    if not isinstance(domain_digests, Mapping):
+                        domain_digests = {}
                     shared_aggregate_digest = str(
                         getattr(
                             local_prepared,
@@ -8056,6 +8061,18 @@ class RedKnotMLAAttnBackend(DeepseekV4AttnBackend):
                         .removeprefix("sha256:")[:12]
                         for layer_id in _PURE_HEADSPLIT_OFFLINE_LAYER_IDS
                     )
+                    domain_prefixes = ";".join(
+                        f"{layer_id}:"
+                        + ",".join(
+                            f"{domain}="
+                            + str(digest).removeprefix("sha256:")[:12]
+                            for domain, digest in sorted(
+                                dict(domain_digests.get(layer_id, {})).items()
+                            )
+                        )
+                        for layer_id in _PURE_HEADSPLIT_OFFLINE_LAYER_IDS
+                        if domain_digests.get(layer_id)
+                    )
                     self._mla_off_log_failure(
                         "shared_snapshot_prepare_identity",
                         "tp_rank="
@@ -8065,7 +8082,9 @@ class RedKnotMLAAttnBackend(DeepseekV4AttnBackend):
                         "shared_aggregate_digest="
                         f"{shared_aggregate_digest} "
                         "shared_layer_digest_prefixes="
-                        f"[{layer_prefixes}]",
+                        f"[{layer_prefixes}] "
+                        "shared_c4_domain_digest_prefixes="
+                        f"[{domain_prefixes}]",
                     )
                 rollback_shared_collectively(
                     local_prepared, "local-prepare"

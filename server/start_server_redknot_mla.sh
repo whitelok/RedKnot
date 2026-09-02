@@ -52,6 +52,74 @@ fi
 
 export PYTHONPATH="$REDKNOT_ROOT/python${PYTHONPATH:+:$PYTHONPATH}"
 echo "REDKNOT_RELEASE_SERVER root=$REDKNOT_ROOT model=$MODEL_PATH python=$PYTHON_BIN head_cfg=${REDKNOT_HEAD_CFG:-none}" >&2
+# Preserve the certified H200 launch path byte-for-byte.  B300 needs two
+# architecture-specific compatibility switches: Triton's bundled CUDA 12.8
+# ptxas cannot assemble sm_103a, and sgl-kernel 0.3.20 has no sm_103 image for
+# RMSNorm.  Both fallbacks are JIT implementations already shipped in this
+# tree, and are enabled only after an explicit/automatic B300 classification.
+REDKNOT_DETECTED_GPU_NAME="$(
+  nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null \
+    | sed -n '1p' \
+    | tr -d '\r' || true
+)"
+REDKNOT_EFFECTIVE_HARDWARE_PROFILE="${REDKNOT_HARDWARE_PROFILE:-auto}"
+if [[ "$REDKNOT_EFFECTIVE_HARDWARE_PROFILE" == "auto" ]]; then
+  if [[ "${REDKNOT_DETECTED_GPU_NAME^^}" == *B300* ]]; then
+    REDKNOT_EFFECTIVE_HARDWARE_PROFILE=b300
+  else
+    REDKNOT_EFFECTIVE_HARDWARE_PROFILE=h200
+  fi
+fi
+case "$REDKNOT_EFFECTIVE_HARDWARE_PROFILE" in
+  h200) ;;
+  b300)
+    if [[ -z "${TRITON_PTXAS_PATH:-}" && -x /usr/local/cuda/bin/ptxas ]]; then
+      export TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas
+    fi
+    export SGLANG_USE_JIT_RMSNORM="${SGLANG_USE_JIT_RMSNORM:-1}"
+    # Torch's SM103 advanced-index read used by full->SWA translation has no
+    # runnable image in the shared wheel.  Use the equivalent in-tree Triton
+    # gather on B300; H200 keeps the original ATen indexing path.
+    export SGLANG_USE_JIT_SWA_TRANSLATION="${SGLANG_USE_JIT_SWA_TRANSLATION:-1}"
+    # Snapshot/restore reads and writes the packed 584-byte DeepSeek-V4 KV
+    # records.  Its SM103-safe Triton gather/scatter is already implemented in
+    # dsv4_rope_reloc; select it only for B300.
+    export SGLANG_USE_JIT_PACKED_OFFSETS="${SGLANG_USE_JIT_PACKED_OFFSETS:-1}"
+    # The shared PyTorch wheel does not ship every elementwise/broadcast kernel
+    # variant used by the MHC post-combine for SM103.  The in-tree Triton MHC
+    # implementation covers both pre and post paths without changing H200.
+    export SGLANG_USE_JIT_MHC="${SGLANG_USE_JIT_MHC:-1}"
+    # sgl-kernel's packaged per-token FP8 group-quant image does not include
+    # SM103.  DeepSeek V4's activation quantization here uses neither fused
+    # SiLU nor masked-M, so the repository's active-arch Triton path applies.
+    export SGLANG_USE_JIT_GROUP_QUANT="${SGLANG_USE_JIT_GROUP_QUANT:-1}"
+    # topk_v1's PDL/radix CUDA kernel performs an illegal access on SM103.
+    # Select the repository's vectorized, numerically equivalent Top-K path on
+    # B300.  H200 continues to use the original optimized CUDA implementation.
+    export SGLANG_TOPK_TRANSFORM_512_TORCH="${SGLANG_TOPK_TRANSFORM_512_TORCH:-1}"
+    # MXFP4 Marlin's packaged kernels are Hopper-specific. FlashInfer 0.5.3
+    # ships a native SM103 FP4 fused-MoE generator, so make that the B300
+    # default. Ignore a stale generic Marlin setting inherited from the H200
+    # launcher; callers can select another verified B300 backend explicitly via
+    # REDKNOT_B300_MOE_RUNNER_BACKEND.
+    export REDKNOT_MOE_RUNNER_BACKEND="${REDKNOT_B300_MOE_RUNNER_BACKEND:-flashinfer_mxfp4}"
+    # FlashInfer 0.5.3 exposes autotune(tune_mode) but this SGLang checkout
+    # calls the newer autotune(..., cache=...) API. Use the deterministic
+    # default SM103 tactic until a cache-aware FlashInfer build is installed.
+    export REDKNOT_DISABLE_FLASHINFER_AUTOTUNE="${REDKNOT_DISABLE_FLASHINFER_AUTOTUNE:-1}"
+    # Triton 3.5's dual-scope split-K DSV4 attention specialization requires
+    # 544 tensor-memory columns on SM103, whose architectural limit is 512.
+    # The numerically equivalent non-split kernel is already SM103-capable.
+    export REDKNOT_DSV4_DISABLE_DUAL_SCOPE_SPLITK="${REDKNOT_DSV4_DISABLE_DUAL_SCOPE_SPLITK:-1}"
+    ;;
+  *)
+    echo "unsupported REDKNOT_HARDWARE_PROFILE=$REDKNOT_EFFECTIVE_HARDWARE_PROFILE (expected auto, h200 or b300)" >&2
+    exit 64
+    ;;
+esac
+export REDKNOT_HARDWARE_PROFILE="$REDKNOT_EFFECTIVE_HARDWARE_PROFILE"
+echo "REDKNOT_HARDWARE profile=$REDKNOT_HARDWARE_PROFILE gpu=${REDKNOT_DETECTED_GPU_NAME:-unknown} moe_backend=${REDKNOT_MOE_RUNNER_BACKEND:-marlin} ptxas=${TRITON_PTXAS_PATH:-bundled} jit_rmsnorm=${SGLANG_USE_JIT_RMSNORM:-0} jit_swa_translation=${SGLANG_USE_JIT_SWA_TRANSLATION:-0} jit_packed_offsets=${SGLANG_USE_JIT_PACKED_OFFSETS:-0} jit_mhc=${SGLANG_USE_JIT_MHC:-0} jit_group_quant=${SGLANG_USE_JIT_GROUP_QUANT:-0} torch_topk512=${SGLANG_TOPK_TRANSFORM_512_TORCH:-0} disable_dual_scope_splitk=${REDKNOT_DSV4_DISABLE_DUAL_SCOPE_SPLITK:-0}" >&2
+unset REDKNOT_DETECTED_GPU_NAME REDKNOT_EFFECTIVE_HARDWARE_PROFILE
 # The repository and virtualenv live on a FUSE mount. Eight spawned TP workers
 # writing the same import-time __pycache__ entries can serialize for minutes on
 # rename locks; bytecode files are not needed by this long-lived server.
@@ -183,7 +251,7 @@ EXTRA_SERVER_ARGS=()
 EXTRA_SERVER_ARGS+=(--radix-eviction-policy "$RADIX_EVICTION_POLICY")
 if [[ -n "${REDKNOT_SWA_FULL_TOKENS_RATIO:-}" ]]; then
   case "$REDKNOT_SWA_FULL_TOKENS_RATIO" in
-    0.1|0.10|0.125|0.13|0.20|0.25|0.30|0.40|0.50) ;;
+    0.1|0.10|0.125|0.13|0.20|0.25|0.30|0.40|0.5|0.50) ;;
     *)
       echo "unsupported REDKNOT_SWA_FULL_TOKENS_RATIO: $REDKNOT_SWA_FULL_TOKENS_RATIO" >&2
       exit 2
@@ -216,6 +284,9 @@ if [[ -n "${REDKNOT_PROGRESSIVE_TOPK_SCHEDULE:-}" ]]; then
   EXTRA_SERVER_ARGS+=(
     --redknot-progressive-topk-schedule "$REDKNOT_PROGRESSIVE_TOPK_SCHEDULE"
   )
+fi
+if [[ "${REDKNOT_DISABLE_FLASHINFER_AUTOTUNE:-0}" == "1" ]]; then
+  EXTRA_SERVER_ARGS+=(--disable-flashinfer-autotune)
 fi
 if [[ "${REDKNOT_SPARSE_FFN:-0}" == "1" ]]; then
   EXTRA_SERVER_ARGS+=(

@@ -27,11 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from compute_ledger import estimate_prefill_saving
+from utils.compute_ledger import estimate_prefill_saving
 
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
+UTILS = HERE / "utils"
 DATA_DIR = HERE / "datasets/LongBench/data"
 PROFILE_ROOT = HERE / "datasets" / "LongBench" / "cohorts"
 SHOWCASE_ROOT = HERE / "datasets" / "LongBench" / "showcase"
@@ -39,11 +40,11 @@ SUITE_ROOT = HERE / "datasets" / "LongBench" / "suites"
 HEAD_CONFIG = HERE / "head_class/deepseek_v4_flash_0731_redknot.json"
 SPARSE_CONFIG = HERE / "sparse_ffn_params/deepseek_v4_flash_0731.json"
 DATA_PROVENANCE = HERE / "datasets/LongBench/PROVENANCE.json"
-SUPERVISOR = HERE / "run_combined_supervisor.sh"
-HOLDER = HERE / "gpu_hold.py"
-INTERNAL_BENCHMARK = HERE / "benchmark_dsv4_redknot_http.py"
-CORE_BENCHMARK = HERE / "benchmark_RedKnot_DeepSeekV4_Flash_RAG.py"
-PROFILE_BUILDER = HERE / "prepare_multidataset_512k_manifests.py"
+SUPERVISOR = UTILS / "run_combined_supervisor.sh"
+HOLDER = UTILS / "gpu_hold.py"
+INTERNAL_BENCHMARK = UTILS / "benchmark_dsv4_redknot_http.py"
+CORE_BENCHMARK = UTILS / "benchmark_RedKnot_DeepSeekV4_Flash_RAG.py"
+PROFILE_BUILDER = UTILS / "prepare_multidataset_512k_manifests.py"
 
 DEFAULT_MODEL_PATH = Path(
     "/mnt/tidal-alsh01/dataset/redone/checkpoints/opensource/"
@@ -64,6 +65,9 @@ DATASET_SHA256 = {
     "multifieldqa_en": "0aac182fd317dcf6d74f8e1e0f3e61029407435346c2e0b3ff9fb45ae49c5c3f",
     "triviaqa": "ed2529de2e10b12c00f49981870c23c7c51667069cdd8d0740e1423ff337d7fa",
 }
+# The base table is the existing H200 release configuration.  Hardware-specific
+# profiles are overlays so adding B300 support cannot silently rewrite or remove
+# the H200 reproduction contract.
 LENGTHS = {
     "64K": {
         "target_tokens": 65536,
@@ -90,13 +94,8 @@ LENGTHS = {
         "chunk_tokens": 32768,
         "num_chunks": 8,
         "merged_prefill": 229376,
-        # The 229376-token online group follows a 32768-token resident
-        # prefix, so the SWA pool must cover the complete 262144-token
-        # request.  The former 0.35/0.25 split yielded only 187648 SWA
-        # slots and deterministically fell back to seven 32768-token
-        # forwards.  B300 has enough post-weight headroom for this pool;
-        # the benchmark's existing authenticated pre-CUDA capacity gate
-        # remains the fail-closed authority.
+        # Preserve the certified H200 release contract.  B300's smaller
+        # physical merge unit is applied only through its hardware overlay.
         "mem_fraction": 0.45,
         "swa_full_ratio": 0.50,
         "cublas_woa_fastpath": 1,
@@ -113,6 +112,44 @@ LENGTHS = {
         "query_protection_tokens": 32768,
     },
 }
+
+B300_LENGTH_OVERRIDES = {
+    "256K": {
+        # Keep each physical forward at the verified 2x32K B300 geometry while
+        # leaving the H200 229376-token release configuration untouched.
+        "merged_prefill": 65536,
+    },
+}
+
+
+def _resolve_hardware_profile(requested: str) -> str:
+    """Return h200 or b300; auto deliberately falls back to the H200 contract."""
+    profile = requested.strip().lower()
+    if profile in {"h200", "b300"}:
+        return profile
+    if profile != "auto":
+        raise ValueError(
+            f"unsupported hardware profile {requested!r}; expected auto, h200 or b300"
+        )
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "h200"
+    names = [line.strip().upper() for line in completed.stdout.splitlines() if line.strip()]
+    return "b300" if names and all("B300" in name for name in names) else "h200"
+
+
+def _length_spec(length: str, hardware_profile: str) -> dict[str, Any]:
+    spec = dict(LENGTHS[length])
+    if hardware_profile == "b300":
+        spec.update(B300_LENGTH_OVERRIDES.get(length, {}))
+    return spec
 
 SUITE_CONTRACTS = {
     "64K": {
@@ -766,7 +803,7 @@ def _ensure_release_holder(holder_python: Path, log: Path) -> int:
     if leaders:
         leader = leaders[0]
         cwd = Path(f"/proc/{leader}/cwd").resolve()
-        if cwd == HERE:
+        if cwd == UTILS:
             return leader
         active = _gpu_pids()
         foreign_list = []
@@ -799,7 +836,7 @@ def _ensure_release_holder(holder_python: Path, log: Path) -> int:
     handle = log.open("ab", buffering=0)
     process = subprocess.Popen(
         [str(holder_python), "gpu_hold.py"],
-        cwd=HERE,
+        cwd=UTILS,
         stdout=handle,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -1145,6 +1182,15 @@ def _run_single() -> int:
     )
     parser.add_argument("--python", default="")
     parser.add_argument("--holder-python", default="/root/miniconda3/bin/python")
+    parser.add_argument(
+        "--hardware-profile",
+        choices=("auto", "h200", "b300"),
+        default=os.environ.get("REDKNOT_HARDWARE_PROFILE", "auto").lower(),
+        help=(
+            "Hardware-tuned launch overlay. auto selects b300 only when every "
+            "visible GPU is a B300; all other/unknown systems retain H200 settings."
+        ),
+    )
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--ttft-warmup", type=int, default=3)
     parser.add_argument("--ttft-iters", type=int, default=10)
@@ -1246,6 +1292,11 @@ def _run_single() -> int:
         raise ValueError("TTFT and quality sample counts must be positive")
     if not 1 <= args.cases_per_dataset <= 200:
         raise ValueError("--cases-per-dataset must be in [1, 200]")
+    hardware_profile = _resolve_hardware_profile(args.hardware_profile)
+    print(
+        f"[hardware] requested={args.hardware_profile} effective={hardware_profile}",
+        flush=True,
+    )
     profile_queries = 1 if args.v01_reference else args.cases_per_dataset
     python = _resolve_python(args.python)
     holder_python = Path(args.holder_python).expanduser().resolve()
@@ -1333,6 +1384,10 @@ def _run_single() -> int:
         "model": str(model),
         "model_repo_fallback": args.model_repo,
         "python": str(python),
+        "hardware_profile": hardware_profile,
+        "length_parameters": {
+            length: _length_spec(length, hardware_profile) for length in lengths
+        },
         "datasets": list(datasets),
         "lengths": list(lengths),
         "cases_per_dataset": 0 if suite_path is not None else profile_queries,
@@ -1381,6 +1436,8 @@ def _run_single() -> int:
             "format",
             "run_mode",
             "model",
+            "hardware_profile",
+            "length_parameters",
             "datasets",
             "lengths",
             "cases_per_dataset",
@@ -1422,7 +1479,7 @@ def _run_single() -> int:
     failures = 0
     for run_spec in run_specs:
         length = str(run_spec["length"])
-        spec = LENGTHS[length]
+        spec = _length_spec(length, hardware_profile)
         dataset = str(run_spec["dataset"])
         run_id = str(run_spec["run_id"])
         run_long_output_tokens = int(run_spec["long_output_tokens"])
@@ -1442,6 +1499,7 @@ def _run_single() -> int:
                     "REDKNOT_PYTHON": str(python),
                     "REDKNOT_HOLDER_PYTHON": str(holder_python),
                     "REDKNOT_MODEL_PATH": str(model),
+                    "REDKNOT_HARDWARE_PROFILE": hardware_profile,
                     "REDKNOT_LONGBENCH_DIR": str(DATA_DIR),
                     "REDKNOT_IH_LONG_OUTPUT_TOKENS": str(
                         run_long_output_tokens

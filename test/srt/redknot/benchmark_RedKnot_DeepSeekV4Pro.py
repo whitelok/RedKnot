@@ -16,7 +16,7 @@ from pathlib import Path
 
 PYTHON = Path("/workspace/RedKnot/.venv_sm103/bin/python")
 PRO_ENTRY = Path(
-    "/workspace/RedKnot/test/srt/redknot/"
+    "/workspace/RedKnot/test/srt/redknot/utils/"
     "benchmark-redknot-deepseekv4-pro.py"
 )
 PRO_PYTHONPATH = (

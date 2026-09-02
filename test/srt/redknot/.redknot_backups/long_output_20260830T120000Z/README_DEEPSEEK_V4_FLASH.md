@@ -61,8 +61,8 @@ python benchmark_RedKnot_DeepSeekV4Flash.py --resume \
 
 The validated machine used CPython 3.11.13, PyTorch 2.9.1 with CUDA 12.8,
 FlashMLA 1.0.0+9241ae3, SGL Kernel 0.3.20, and NVIDIA driver 570.148.08 on
-eight L20X GPUs. Hardware-specific kernels must be rebuilt when the Python,
-CUDA or GPU ABI differs.
+eight NVIDIA H200 GPUs. Hardware-specific kernels must be rebuilt when the
+Python, CUDA or GPU ABI differs.
 
 The DeepSeek-V4 runtime and benchmark implementation are copied directly from
 RedKnotV0.1; this release entrypoint does not reimplement the algorithm. The

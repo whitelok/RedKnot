@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Mapping, Optional, Sequence, Tuple
 
 
@@ -33,6 +34,14 @@ COMBINED_ROW_SPARSE_PROFILE = (
     "rowsparse_3_37_3_v1"
 )
 PURE_CONTEXT_HEAD_SCOPE = "native_dsv4_full_candidate_scope_v1"
+
+
+def _effective_max_logical_tokens() -> int:
+    """Keep H200's certified limit while allowing B300's 16x32K geometry."""
+
+    if os.environ.get("REDKNOT_HARDWARE_PROFILE", "").strip().lower() == "b300":
+        return 524_288
+    return MERGED_PREFILL_MAX_LOGICAL_TOKENS
 
 
 def validate_merged_prefill_request(
@@ -96,7 +105,7 @@ def validate_merged_prefill_request(
                 "the online request must contain at least one complete "
                 "merged group"
             )
-        if total_segments * segment_tokens > MERGED_PREFILL_MAX_LOGICAL_TOKENS:
+        if total_segments * segment_tokens > _effective_max_logical_tokens():
             raise ValueError("logical merged-prefill prefix must not exceed 262144")
     return requested
 
@@ -261,7 +270,7 @@ def _validated_plan_request(plan: object) -> Optional[int]:
         or origin_segments < 0
         or (radix_prefix_role == "consume" and alignment_origin <= 0)
         or online_segments < merged_segments
-        or expected_offset > MERGED_PREFILL_MAX_LOGICAL_TOKENS
+        or expected_offset > _effective_max_logical_tokens()
     ):
         return None
     return requested

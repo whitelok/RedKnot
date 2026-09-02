@@ -2926,6 +2926,20 @@ class DeepseekV4DecoderLayer(nn.Module):
             )
             return y, post, comb, False
 
+        if os.environ.get("SGLANG_USE_JIT_MHC", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_hc_pre
+
+            y, post, comb = triton_hc_pre(
+                x,
+                hc_fn,
+                hc_scale,
+                hc_base,
+                self.rms_norm_eps,
+                self.hc_sinkhorn_iters,
+                self.hc_eps,
+            )
+            return y, post, comb, False
+
         if envs.SGLANG_OPT_USE_TILELANG_MHC_PRE.get():
             from sglang.srt.layers.mhc import mhc_pre
 
@@ -3005,6 +3019,11 @@ class DeepseekV4DecoderLayer(nn.Module):
             return torch.empty(
                 (0, self.hc_mult, x.shape[-1]), dtype=x.dtype, device=x.device
             )
+
+        if os.environ.get("SGLANG_USE_JIT_MHC", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_hc_post
+
+            return triton_hc_post(x, residual, post, comb)
 
         if envs.SGLANG_OPT_USE_TILELANG_MHC_POST.get():
             from sglang.srt.layers.mhc import mhc_post

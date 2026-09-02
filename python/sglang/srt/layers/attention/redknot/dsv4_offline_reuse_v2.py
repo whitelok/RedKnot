@@ -149,6 +149,19 @@ def _compress_state_group_view(
     return state_buffer.view(-1, width, state_buffer.shape[-1])
 
 
+def _jit_gather_slices_1d(
+    values: torch.Tensor, ranges: Sequence[Tuple[int, int]]
+) -> torch.Tensor:
+    """Concatenate 1-D CUDA slices through the active-architecture gather."""
+    source_positions = torch.tensor(
+        [position for begin, end in ranges for position in range(begin, end)],
+        dtype=torch.int64,
+    ).to(values.device)
+    from sglang.jit_kernel.dsv4.attn import triton_index_select_rows
+
+    return triton_index_select_rows(values, source_positions)
+
+
 class DSV4OfflineReuseControllerV2:
     """Three-layer offline segment KV reuse for DSV4."""
 
@@ -244,9 +257,21 @@ class DSV4OfflineReuseControllerV2:
         if int(slot_indices.numel()) < length:
             raise ValueError("SWA checkpoint slots do not cover the segment")
 
-        checkpoint_slots = torch.cat(
-            [slot_indices[anchor - self.swa_window : anchor] for anchor in anchors]
-        )
+        if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+            checkpoint_slots = _jit_gather_slices_1d(
+                slot_indices,
+                [
+                    (anchor - self.swa_window, anchor)
+                    for anchor in anchors
+                ],
+            )
+        else:
+            checkpoint_slots = torch.cat(
+                [
+                    slot_indices[anchor - self.swa_window : anchor]
+                    for anchor in anchors
+                ]
+            )
         packed = read_packed_kv(
             kv_buffer, checkpoint_slots, page_size
         ).detach().cpu()
@@ -315,9 +340,27 @@ class DSV4OfflineReuseControllerV2:
         state_groups = _compress_state_group_view(
             state_buffer, state_group_width
         )
-        data = state_groups.index_select(
-            0, torch.cat(anchor_slots).to(torch.long)
-        ).detach().cpu()
+        if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_index_select_rows
+
+            selected_slots = _jit_gather_slices_1d(
+                state_slots,
+                [
+                    (
+                        anchor // compress_ratio - width,
+                        anchor // compress_ratio,
+                    )
+                    for anchor, width in zip(anchors, widths)
+                ],
+            )
+            data = triton_index_select_rows(
+                state_groups, selected_slots
+            ).detach().cpu()
+        else:
+            selected_slots = torch.cat(anchor_slots)
+            data = state_groups.index_select(
+                0, selected_slots.to(torch.long)
+            ).detach().cpu()
         checkpoints: Dict[int, torch.Tensor] = {}
         cursor = 0
         for anchor, width in zip(anchors, widths):
@@ -941,9 +984,16 @@ class DSV4OfflineReuseControllerV2:
         state_groups = _compress_state_group_view(
             state_buffer, state_group_width
         )
-        data = state_groups.index_select(
-            0, state_slots.to(torch.long)
-        ).detach().cpu()
+        if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_index_select_rows
+
+            data = triton_index_select_rows(
+                state_groups, state_slots
+            ).detach().cpu()
+        else:
+            data = state_groups.index_select(
+                0, state_slots.to(torch.long)
+            ).detach().cpu()
         if is_indexer:
             seg.indexer_compress_state[layer_id] = data
         else:
@@ -1247,7 +1297,12 @@ class DSV4OfflineReuseControllerV2:
                 f"cached={tuple(data.shape[1:])} "
                 f"destination={tuple(state_groups.shape[1:])}"
             )
-        state_groups.index_copy_(0, dst_slots.to(torch.long), data)
+        if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_index_copy_rows
+
+            triton_index_copy_rows(state_groups, dst_slots, data)
+        else:
+            state_groups.index_copy_(0, dst_slots.to(torch.long), data)
         return int(data.shape[0])
 
     @torch.no_grad()
@@ -1289,7 +1344,12 @@ class DSV4OfflineReuseControllerV2:
                 f"cached={tuple(data.shape[1:])} "
                 f"destination={tuple(state_groups.shape[1:])}"
             )
-        state_groups.index_copy_(0, dst_slots.to(torch.long), data)
+        if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+            from sglang.jit_kernel.dsv4.attn import triton_index_copy_rows
+
+            triton_index_copy_rows(state_groups, dst_slots, data)
+        else:
+            state_groups.index_copy_(0, dst_slots.to(torch.long), data)
         return int(data.shape[0])
 
     # ──────────────────────────────────────────────────────────────────
@@ -1403,6 +1463,17 @@ def compute_compressed_slots(
     n = seq_len // compress_ratio
     if n == 0:
         return torch.empty(0, dtype=torch.int32, device=full_slots.device)
+    if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+        from sglang.jit_kernel.dsv4.attn import triton_compute_compressed_slots
+
+        return triton_compute_compressed_slots(
+            full_slots,
+            full_to_swa,
+            seq_len,
+            compress_ratio,
+            swa_page_size,
+            ring_size,
+        )
     boundary_indices = (
         torch.arange(1, n + 1, device=full_slots.device, dtype=torch.long)
         * compress_ratio
@@ -1474,6 +1545,19 @@ def compute_paged_compressed_slots(
     n = seq_len // compress_ratio
     if n == 0:
         return torch.empty(0, dtype=torch.int32, device=page_table.device)
+    if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+        from sglang.jit_kernel.dsv4.attn import (
+            triton_compute_paged_compressed_slots,
+        )
+
+        return triton_compute_paged_compressed_slots(
+            page_table,
+            req_idx,
+            seq_len,
+            compress_ratio,
+            compressed_page_size,
+            token_offset,
+        )
     c_start = token_offset // compress_ratio
     offsets = c_start + torch.arange(n, device=page_table.device, dtype=torch.long)
     page_idx = offsets // compressed_page_size
@@ -1500,6 +1584,12 @@ def _read_indexer_packed(
     if buf.dtype != torch.uint8:
         buf = buf.view(torch.uint8)
     num_pages, page_bytes = buf.shape
+    if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+        from sglang.jit_kernel.dsv4.attn import triton_read_packed_kv_u8
+
+        return triton_read_packed_kv_u8(
+            buf, loc, page_size, page_bytes, 128, 4
+        )
     # index_head_dim = 128 typically, scales = 4 bytes, total = 132 bytes/slot
     # But the actual per-slot layout within a page is more complex.
     # Safe approach: save entire pages that contain our slots.
@@ -1533,6 +1623,14 @@ def _write_indexer_packed(
     if buf.dtype != torch.uint8:
         buf = buf.view(torch.uint8)
     num_pages, page_bytes = buf.shape
+    if os.environ.get("SGLANG_USE_JIT_PACKED_OFFSETS", "0") == "1":
+        from sglang.jit_kernel.dsv4.attn import triton_write_packed_kv_u8
+
+        packed = packed.to(device=buf.device, dtype=torch.uint8).contiguous()
+        triton_write_packed_kv_u8(
+            buf, loc, packed, page_size, page_bytes, 128, 4
+        )
+        return
     flat = buf.flatten()
     n = loc.shape[0]
     loc = loc.to(torch.int64)

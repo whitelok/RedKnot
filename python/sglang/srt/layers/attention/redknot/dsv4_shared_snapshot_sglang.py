@@ -474,6 +474,9 @@ class SGLangSnapshotSession:
     shared_latent_layer_digests: Dict[int, str] = field(
         default_factory=dict, repr=False
     )
+    shared_latent_domain_digests: Dict[int, Mapping[str, str]] = field(
+        default_factory=dict, repr=False
+    )
     local_prepared: Optional[object] = field(default=None, repr=False)
     runtime_prepared: Optional[object] = field(default=None, repr=False)
     runtime_published: Optional[object] = field(default=None, repr=False)
@@ -885,7 +888,7 @@ class DSV4SharedSnapshotSGLangAdapter:
         bundle: object,
         gpu_stream: Optional[object],
         gpu_non_blocking: bool,
-    ) -> Tuple[SnapshotLayerCapture, str]:
+    ) -> Tuple[SnapshotLayerCapture, str, Mapping[str, str]]:
         layer_spec = session.layer_specs[layer_id]
         ratio = _ratio(layer_spec)
         if (
@@ -984,7 +987,13 @@ class DSV4SharedSnapshotSGLangAdapter:
             compress_ratio=ratio,
             cpu_payloads=cpu_payloads,
         )
-        return capture, shared_digest
+        domain_digests = MappingProxyType(
+            {
+                domain: "sha256:" + sha256(cpu_payloads[domain]).hexdigest()
+                for domain in sorted(cpu_payloads)
+            }
+        )
+        return capture, shared_digest, domain_digests
 
     def prepare_local(
         self,
@@ -1016,11 +1025,12 @@ class DSV4SharedSnapshotSGLangAdapter:
             # therefore never partially populate the runtime participants.
             captures = {}
             shared_layer_digests = {}
+            shared_domain_digests = {}
             for layer_id in REUSABLE_LAYER_IDS:
                 session.z_off_stagings[layer_id].finalize()
                 bundle = self._finalize_latent(session.latent_stagings[layer_id])
                 session.finalized_bundles[layer_id] = bundle
-                capture, shared_digest = self._make_layer_capture(
+                capture, shared_digest, domain_digests = self._make_layer_capture(
                     session,
                     layer_id=layer_id,
                     bundle=bundle,
@@ -1031,6 +1041,7 @@ class DSV4SharedSnapshotSGLangAdapter:
                 shared_layer_digests[layer_id] = _sha_digest(
                     shared_digest, "shared-latent layer digest"
                 )
+                shared_domain_digests[layer_id] = domain_digests
             capture_receipts = {}
             for layer_id in REUSABLE_LAYER_IDS:
                 receipt = self.snapshot_runtime.capture_layer(
@@ -1052,6 +1063,7 @@ class DSV4SharedSnapshotSGLangAdapter:
                 capture_receipts[layer_id] = receipt
             session.local_capture_receipts.update(capture_receipts)
             session.shared_latent_layer_digests.update(shared_layer_digests)
+            session.shared_latent_domain_digests.update(shared_domain_digests)
             identity = _field(session.runtime_bundle, "identity")
             runtime_identity_digest = _sha_digest(
                 _field(identity, "digest"), "runtime snapshot identity digest"

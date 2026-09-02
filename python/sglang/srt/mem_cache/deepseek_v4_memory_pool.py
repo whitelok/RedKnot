@@ -7,6 +7,7 @@ from typing import List, Literal, NamedTuple, Optional, Tuple
 import torch
 
 from sglang.jit_kernel.dsv4 import fused_k_norm_rope_flashmla, fused_store_cache
+from sglang.jit_kernel.dsv4.attn import triton_translate_loc
 from sglang.srt.constants import GPU_MEMORY_TYPE_KV_CACHE
 from sglang.srt.environ import envs
 from sglang.srt.layers.attention.dsa import index_buf_accessor
@@ -18,11 +19,12 @@ from sglang.srt.mem_cache.base_swa_memory_pool import BaseSWAKVPool
 from sglang.srt.mem_cache.deepseek_v4_compress_state import CompressStatePool
 from sglang.srt.mem_cache.memory_pool import KVCache
 from sglang.srt.server_args import get_global_server_args
-from sglang.srt.utils import ceil_div, is_hip
+from sglang.srt.utils import ceil_div, get_bool_env_var, is_hip
 
 logger = logging.getLogger(__name__)
 
 _is_hip = is_hip()
+_use_jit_swa_translation = get_bool_env_var("SGLANG_USE_JIT_SWA_TRANSLATION")
 
 ONLINE_C128 = not _is_hip and envs.SGLANG_OPT_USE_ONLINE_COMPRESS.get()
 
@@ -510,6 +512,8 @@ class DeepSeekV4TokenToKVPool(BaseSWAKVPool):
     def translate_loc_from_full_to_swa(self, kv_indices: torch.Tensor):
         assert self.full_to_swa_index_mapping is not None
 
+        if _use_jit_swa_translation:
+            return triton_translate_loc(self.full_to_swa_index_mapping, kv_indices)
         return self.full_to_swa_index_mapping[kv_indices].to(torch.int32)
 
     def get_contiguous_buf_infos(self) -> Tuple[List[int], List[int], List[int]]:

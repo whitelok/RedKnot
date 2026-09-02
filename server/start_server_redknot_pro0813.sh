@@ -81,11 +81,11 @@ export PYTHONNOUSERSITE=1
 export PYTHONSAFEPATH=1
 
 test -r "$REDKNOT_ROOT/python/sglang/srt/layers/attention/redknot_mla_backend.py"
-test -r "$REDKNOT_ROOT/test/srt/redknot/verify_pro0813_official_model.py"
-test -r "$REDKNOT_ROOT/test/srt/redknot/probe_pro0813_jit_rmsnorm_sm103.py"
-test -r "$REDKNOT_ROOT/test/srt/redknot/probe_pro0813_triton_h1_sm103.py"
+test -r "$REDKNOT_ROOT/test/srt/redknot/utils/verify_pro0813_official_model.py"
+test -r "$REDKNOT_ROOT/test/srt/redknot/utils/probe_pro0813_jit_rmsnorm_sm103.py"
+test -r "$REDKNOT_ROOT/test/srt/redknot/utils/probe_pro0813_triton_h1_sm103.py"
 if ! "$PYTHON_BIN" \
-  "$REDKNOT_ROOT/test/srt/redknot/verify_pro0813_official_model.py"; then
+  "$REDKNOT_ROOT/test/srt/redknot/utils/verify_pro0813_official_model.py"; then
   echo "official Pro-0813 model is incomplete or does not match the immutable manifest" >&2
   exit 2
 fi
@@ -234,13 +234,13 @@ if ! awk -F',' '
   exit 2
 fi
 if ! CUDA_VISIBLE_DEVICES=0 "$PYTHON_BIN" \
-  "$REDKNOT_ROOT/test/srt/redknot/probe_pro0813_jit_rmsnorm_sm103.py"; then
+  "$REDKNOT_ROOT/test/srt/redknot/utils/probe_pro0813_jit_rmsnorm_sm103.py"; then
   echo "B300/SM103 JIT RMSNorm numerical oracle failed" >&2
   exit 2
 fi
 if ! CUDA_VISIBLE_DEVICES=0 REDKNOT_PRO0813_B300_TRITON_H1_PROBE=1 \
   "$PYTHON_BIN" \
-  "$REDKNOT_ROOT/test/srt/redknot/probe_pro0813_triton_h1_sm103.py" \
+  "$REDKNOT_ROOT/test/srt/redknot/utils/probe_pro0813_triton_h1_sm103.py" \
   --expected-source-root "$REDKNOT_ROOT/python"; then
   echo "B300/SM103 Triton H1 numerical oracle failed" >&2
   exit 2

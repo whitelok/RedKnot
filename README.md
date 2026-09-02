@@ -103,10 +103,11 @@ online prefill with no RedKnot prefix reuse; RedKnot materializes the first
 document as the certified prefix and applies the published reuse, row-sparse
 and adaptive-Top-K policy to the remaining documents.
 
-The published measurements above were produced on L20X, not H200. An 8× H200
-node has comparable memory capacity, but it must rebuild the hardware-specific
-FlashMLA, DeepGEMM and SGL kernels and rerun the frozen suites; L20X timings are
-not presented as H200 measurements.
+All measurements and validation experiments in this repository were run on
+8× NVIDIA H200 or 8× NVIDIA B300 nodes in TP8. No L20X/L20Y measurements are
+reported. H200 uses the certified Hopper release configuration; B300 uses the
+separate SM103 hardware profile and rebuilds the hardware-specific FlashMLA,
+DeepGEMM and SGL kernels before running the same frozen suites.
 
 ### Quick start
 

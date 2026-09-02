@@ -562,7 +562,22 @@ def sglang_per_token_group_quant_fp8(
 
     if x.shape[0] > 0:
         # Temporary
-        if enable_sgl_per_token_group_quant_8bit:
+        if os.environ.get("SGLANG_USE_JIT_GROUP_QUANT", "0") == "1":
+            if fuse_silu_and_mul or masked_m is not None:
+                raise ValueError(
+                    "SM103 JIT group quant does not support fused SiLU or masked M"
+                )
+            sgl_per_token_group_quant_8bit_jit(
+                input=x,
+                output_q=x_q,
+                output_s=x_s,
+                group_size=group_size,
+                eps=eps,
+                fp8_min=fp8_min,
+                fp8_max=fp8_max,
+                scale_ue8m0=scale_ue8m0,
+            )
+        elif enable_sgl_per_token_group_quant_8bit:
             if enable_v2:
                 sgl_per_token_group_quant_8bit(
                     x,

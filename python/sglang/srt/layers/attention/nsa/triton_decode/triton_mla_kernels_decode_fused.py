@@ -19,6 +19,7 @@ OPTIMIZED VERSION: Reduced code duplication in dual-scope kernel by using
 a helper function for KV block processing.
 """
 
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -38,6 +39,25 @@ DSV4_TILE_SIZE = 64
 DSV4_NUM_TILES = 7
 DSV4_BYTES_PER_TOKEN_DATA = 576  # 448 nope + 128 rope
 DSV4_BYTES_PER_TOKEN_SCALE = 8  # 7 scales + 1 padding
+
+_DISABLE_DUAL_SCOPE_SPLITK_ENV = "REDKNOT_DSV4_DISABLE_DUAL_SCOPE_SPLITK"
+_SM103_HEAD_TILE_PRUNE_ENV = "REDKNOT_DSV4_SM103_HEAD_TILE_PRUNE"
+
+
+def _dual_scope_splitk_disabled() -> bool:
+    """Select the SM103-safe non-split kernel without changing Hopper."""
+
+    return os.environ.get(_DISABLE_DUAL_SCOPE_SPLITK_ENV) == "1"
+
+
+def _sm103_head_tile_prune_enabled() -> bool:
+    """Limit the SM103 compilation workaround to the B300 profile."""
+
+    return (
+        os.environ.get("REDKNOT_HARDWARE_PROFILE", "").strip().lower()
+        == "b300"
+        and os.environ.get(_SM103_HEAD_TILE_PRUNE_ENV, "1") == "1"
+    )
 
 
 # ============================================================================
@@ -1226,15 +1246,22 @@ def _fused_gather_attn_dsv4_dual_scope_kernel(
 
 
 def _prune_splitk_configs(configs, named_args, **kwargs):
-    """Prune BLOCK_H=16 configs for large batch sizes to avoid CU oversubscription.
+    """Prune split-K head tiles for the actual TP-local head count.
 
     With h_q=128 and BLOCK_H=16, the grid has cdiv(128,16)=8 H-blocks.
     At bs=32 with split_k=2, this creates 8*32*2=512 blocks (200% CU),
     causing performance regression from oversubscription.
 
-    For small batch sizes (bucket <= 8), BLOCK_H=16 provides better
+    On B300, RedKnot can present fewer than 16 logical heads on one TP rank.
+    Apply the same head-aware pruning as the non-split dual-scope kernel only
+    for that hardware profile.  This leaves the H200 autotune candidate set
+    byte-for-byte equivalent to the original path.
+
+    For small batch sizes (bucket <= 8), BLOCK_H=16 also provides better
     parallelism and is ~10% faster in CUDA graph replay.
     """
+    if _sm103_head_tile_prune_enabled():
+        configs = _prune_head_tile_configs(configs, named_args, **kwargs)
     total_tokens_bucket = named_args.get("total_tokens_bucket", 32)
     if total_tokens_bucket > 8:
         # Remove BLOCK_H=16 configs for large batch sizes
@@ -1797,7 +1824,7 @@ def fused_gather_attn_decode_dsv4_dual_scope(
     # For h_q > 64 (e.g. h_q=128), the non-splitk grid has very few blocks
     # in the H dimension, leading to low GPU utilization at medium batch sizes.
     use_splitk_for_large_hq = h_q > 64 and total_tokens > 8 and total_topk >= 256
-    if (
+    if not _dual_scope_splitk_disabled() and (
         use_splitk_for_small_bs
         or use_splitk_for_h64_large_topk
         or use_splitk_for_large_topk
@@ -2995,7 +3022,7 @@ def fused_gather_attn_decode_dsv4_dual_scope_low_overhead(
     # at medium batch sizes.  Split-K doubles the parallelism.
     use_splitk_for_large_hq = h_q > 64 and total_tokens > 8 and total_topk >= 256
 
-    if not (
+    if _dual_scope_splitk_disabled() or not (
         use_splitk_for_small_bs
         or use_splitk_for_h64_large_topk
         or use_splitk_for_large_topk
